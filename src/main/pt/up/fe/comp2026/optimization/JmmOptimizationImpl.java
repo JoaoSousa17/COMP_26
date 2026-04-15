@@ -18,20 +18,20 @@ public class JmmOptimizationImpl implements JmmOptimization {
         // Visit the AST and obtain OLLIR code
         var ollirCode = visitor.visit(semanticsResult.getRootNode());
 
-//        System.out.println("\nOLLIR:\n\n" + ollirCode);
+        System.out.println("\nOLLIR:\n\n" + ollirCode);
 
         return new OllirResult(semanticsResult, ollirCode, Collections.emptyList());
     }
 
-    /*@Override
-    public JmmSemanticsResult optimize(JmmSemanticsResult semanticsResult) {
+    @Override
+    public JmmSemanticsResult transformAst(JmmSemanticsResult semanticsResult) {
 
         //TODO: Do your AST-based optimizations here
         return semanticsResult;
     }
 
     @Override
-    public OllirResult optimize(OllirResult ollirResult) {
+    public OllirResult transformOllir(OllirResult ollirResult) {
 
         if (ollirResult.config().getOrDefault("debug", "false").equals("true")) {
             System.out.println("OLLIR CODE:");
@@ -41,6 +41,6 @@ public class JmmOptimizationImpl implements JmmOptimization {
         //TODO: Do your OLLIR-based optimizations here
 
         return ollirResult;
-    }*/
+    }
 
 }
