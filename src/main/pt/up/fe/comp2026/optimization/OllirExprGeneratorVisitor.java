@@ -14,11 +14,7 @@ import pt.up.fe.comp2026.ast.TypeUtils;
 import static pt.up.fe.comp2026.jmm.ast.JmmKind.*;
 
 /**
- * Generates OLLIR code from expression JmmNodes.
- *
- * Returns an {@link OllirExprResult}:
- *   - computation : OLLIR statements needed before the value is usable
- *   - code        : the OLLIR operand for the result (e.g. "tmp0.i32")
+ * Generates OLLIR code from expression JmmNodes. hyt
  */
 public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult> {
 
@@ -30,10 +26,7 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
     private final TypeUtils types;
     private final OptUtils ollirTypes;
 
-    /** Set by OllirGeneratorVisitor when entering each method. */
     public MethodSymbol currentMethod;
-
-    /** Hint set by visitAssignStmt so method calls with unknown return type use the assignment target type. */
     public JmmType expectedReturnType = null;
 
     public OllirExprGeneratorVisitor(SymbolTable table, OptUtils ollirTypes) {
@@ -50,6 +43,10 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         addVisit(PAREN_EXPR,              this::visitParen);
         addVisit(BINARY_EXPR,             this::visitBinExpr);
         addVisit(UNARY_EXPR,              this::visitUnaryNot);
+        addVisit(PLUS_EXPR,               this::visitUnaryPlus);
+        addVisit(MINUS_EXPR,              this::visitUnaryMinus);
+        addVisit(PLUS_PLUS_EXPR,          this::visitPreIncrement);
+        addVisit(MINUS_MINUS_EXPR,        this::visitPreDecrement);
         addVisit(THIS_EXPR,               this::visitThis);
         addVisit(METHOD_CALL_EXPR,        this::visitMethodCall);
         addVisit(IMPLICIT_THIS_CALL_EXPR, this::visitImplicitThisCall);
@@ -78,7 +75,6 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         JmmType type = types.getExprType(node, currentMethod);
 
         if (type == null) {
-            // Imported class name used as a static call receiver — emit bare identifier
             return new OllirExprResult(ollirTypes.sanitizeId(name));
         }
 
@@ -141,14 +137,6 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         return new OllirExprResult(tmp, computation);
     }
 
-    /**
-     * Short-circuit AND:
-     *   tmp = 0.bool;
-     *   if (!lhs) goto andEnd;
-     *   if (!rhs) goto andEnd;
-     *   tmp = 1.bool;
-     *   andEnd:
-     */
     private OllirExprResult visitAndExpr(JmmNode node) {
         var lhs = visit(node.getChild(0));
         var rhs = visit(node.getChild(1));
@@ -184,7 +172,67 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         return new OllirExprResult(tmp, computation);
     }
 
-    // ── Method calls (3.1.4) ─────────────────────────────────────────────────
+    // ── Unary arithmetic: +x, -x, ++x, --x ──────────────────────────────────
+
+    /**
+     * Unary + is a no-op for integers: +x => x
+     */
+    private OllirExprResult visitUnaryPlus(JmmNode node, Void unused) {
+        return visit(node.getChild(0));
+    }
+
+    /**
+     * Unary minus: -x => 0 - x
+     */
+    private OllirExprResult visitUnaryMinus(JmmNode node, Void unused) {
+        var operand = visit(node.getChild(0));
+        StringBuilder computation = new StringBuilder();
+        computation.append(operand.getComputation());
+
+        String tmp = ollirTypes.nextTemp() + ".i32";
+        computation.append(tmp).append(SPACE)
+                .append(ASSIGN).append(".i32 ")
+                .append("0.i32 -.i32 ").append(operand.getCode())
+                .append(END_STMT);
+
+        return new OllirExprResult(tmp, computation);
+    }
+
+    /**
+     * Pre-increment: ++x => x + 1
+     */
+    private OllirExprResult visitPreIncrement(JmmNode node, Void unused) {
+        var operand = visit(node.getChild(0));
+        StringBuilder computation = new StringBuilder();
+        computation.append(operand.getComputation());
+
+        String tmp = ollirTypes.nextTemp() + ".i32";
+        computation.append(tmp).append(SPACE)
+                .append(ASSIGN).append(".i32 ")
+                .append(operand.getCode()).append(" +.i32 1.i32")
+                .append(END_STMT);
+
+        return new OllirExprResult(tmp, computation);
+    }
+
+    /**
+     * Pre-decrement: --x => x - 1
+     */
+    private OllirExprResult visitPreDecrement(JmmNode node, Void unused) {
+        var operand = visit(node.getChild(0));
+        StringBuilder computation = new StringBuilder();
+        computation.append(operand.getComputation());
+
+        String tmp = ollirTypes.nextTemp() + ".i32";
+        computation.append(tmp).append(SPACE)
+                .append(ASSIGN).append(".i32 ")
+                .append(operand.getCode()).append(" -.i32 1.i32")
+                .append(END_STMT);
+
+        return new OllirExprResult(tmp, computation);
+    }
+
+    // ── Method calls ─────────────────────────────────────────────────────────
 
     private OllirExprResult visitMethodCall(JmmNode node, Void unused) {
         String methodName = node.get("name");
@@ -255,7 +303,7 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         }
     }
 
-    // ── Object creation (3.1.4) ──────────────────────────────────────────────
+    // ── Object creation ──────────────────────────────────────────────────────
 
     private OllirExprResult visitNewExpr(JmmNode node, Void unused) {
         String className = node.get("name");
@@ -353,10 +401,6 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         return table.getField(name).isPresent();
     }
 
-    /**
-     * Returns true if the receiver of a METHOD_CALL_EXPR should use invokestatic.
-     * A VarRefExpr that resolves to an imported class name (not a local/param/field) is static.
-     */
     private boolean isStaticCall(JmmNode receiverNode) {
         if (!VAR_REF_EXPR.check(receiverNode)) return false;
         String name = receiverNode.get("name");

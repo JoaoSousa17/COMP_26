@@ -202,14 +202,26 @@ public class OllirGeneratorVisitor extends AJmmVisitor<Void, String> {
         code.append(ollirTypes.toOllirType(currentMethod.returnType()));
         code.append(L_BRACKET);
 
+        StringBuilder bodyCode = new StringBuilder();
         for (var child : node.getChildren()) {
             if (VAR_DECL.check(child) || PARAM.check(child) || TYPE.check(child)) continue;
             String childCode = visit(child);
             if (childCode != null && !childCode.isBlank()) {
-                code.append("   ").append(childCode.replace("\n", "\n   "));
+                bodyCode.append("   ").append(childCode.replace("\n", "\n   "));
             }
         }
 
+        // For void methods, ensure there's always a ret.V at the end.
+        // JMM allows void methods without explicit return, but OLLIR requires it.
+        if (JmmPrimitiveType.VOID.equals(currentMethod.returnType())) {
+            String body = bodyCode.toString();
+            // Only add ret.V if the body doesn't already end with a return
+            if (!body.stripTrailing().endsWith("ret.V;")) {
+                bodyCode.append("   ret.V;\n");
+            }
+        }
+
+        code.append(bodyCode);
         code.append(R_BRACKET).append(NL);
 
         currentMethod = null;
