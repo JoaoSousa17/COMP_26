@@ -33,6 +33,9 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
     /** Set by OllirGeneratorVisitor when entering each method. */
     public MethodSymbol currentMethod;
 
+    /** Hint set by visitAssignStmt so method calls with unknown return type use the assignment target type. */
+    public JmmType expectedReturnType = null;
+
     public OllirExprGeneratorVisitor(SymbolTable table, OptUtils ollirTypes) {
         this.table = (JmmSymbolTable) table;
         this.types = new TypeUtils(table);
@@ -70,16 +73,17 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
 
     // ── Variables ────────────────────────────────────────────────────────────
 
-    /**
-     * Variable reference. If the name resolves to a class field (not a local/param),
-     * emit a getfield instruction and return a fresh tmp.
-     */
     private OllirExprResult visitVarRef(JmmNode node, Void unused) {
         String name = node.get("name");
         JmmType type = types.getExprType(node, currentMethod);
+
+        if (type == null) {
+            // Imported class name used as a static call receiver — emit bare identifier
+            return new OllirExprResult(ollirTypes.sanitizeId(name));
+        }
+
         String ollirType = ollirTypes.toOllirType(type);
 
-        // Check if it's a field (not found as local or param)
         if (isField(name)) {
             String className = table.getClassName();
             StringBuilder computation = new StringBuilder();
@@ -96,8 +100,7 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
     }
 
     private OllirExprResult visitThis(JmmNode node, Void unused) {
-        String className = table.getClassName();
-        return new OllirExprResult("this." + className);
+        return new OllirExprResult("this." + table.getClassName());
     }
 
     // ── Parentheses ──────────────────────────────────────────────────────────
@@ -111,7 +114,6 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
     private OllirExprResult visitBinExpr(JmmNode node, Void unused) {
         String op = node.get("op");
 
-        // && must be compiled as short-circuit (CondBranch), not a BinaryOp
         if (op.equals("&&")) {
             return visitAndExpr(node);
         }
@@ -127,15 +129,13 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         String resOllirType = ollirTypes.toOllirType(resType);
         String tmp = ollirTypes.nextTemp() + resOllirType;
 
-        // OLLIR operator token uses the operand type, not the result type
         JmmType operandType = types.getExprType(node.getChild(0), currentMethod);
         String opOllirType = ollirTypes.toOllirType(operandType);
-        String ollirOp = jmmOpToOllir(op);
 
         computation.append(tmp).append(SPACE)
                 .append(ASSIGN).append(resOllirType).append(SPACE)
                 .append(lhs.getCode()).append(SPACE)
-                .append(ollirOp).append(opOllirType).append(SPACE)
+                .append(jmmOpToOllir(op)).append(opOllirType).append(SPACE)
                 .append(rhs.getCode()).append(END_STMT);
 
         return new OllirExprResult(tmp, computation);
@@ -143,7 +143,6 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
 
     /**
      * Short-circuit AND:
-     *
      *   tmp = 0.bool;
      *   if (!lhs) goto andEnd;
      *   if (!rhs) goto andEnd;
@@ -161,17 +160,10 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         computation.append(lhs.getComputation());
         computation.append(rhs.getComputation());
 
-        // Default result: false
         computation.append(tmp).append(SPACE).append(ASSIGN).append(".bool 0.bool").append(END_STMT);
-
-        // if lhs is false → skip to end
         computation.append("if (!.bool ").append(lhs.getCode()).append(") goto ").append(labelEnd).append(END_STMT);
-        // if rhs is false → skip to end
         computation.append("if (!.bool ").append(rhs.getCode()).append(") goto ").append(labelEnd).append(END_STMT);
-
-        // Both true
         computation.append(tmp).append(SPACE).append(ASSIGN).append(".bool 1.bool").append(END_STMT);
-
         computation.append(labelEnd).append(":\n");
 
         return new OllirExprResult(tmp, computation);
@@ -192,7 +184,7 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         return new OllirExprResult(tmp, computation);
     }
 
-    // ── Method calls ─────────────────────────────────────────────────────────
+    // ── Method calls (3.1.4) ─────────────────────────────────────────────────
 
     private OllirExprResult visitMethodCall(JmmNode node, Void unused) {
         String methodName = node.get("name");
@@ -213,9 +205,8 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         }
 
         JmmType retType = types.getExprType(node, currentMethod);
-        String retOllirType = retType != null
-                ? ollirTypes.toOllirType(retType)
-                : ".V";
+        if (retType == null) retType = expectedReturnType;
+        String retOllirType = retType != null ? ollirTypes.toOllirType(retType) : ".V";
         boolean isVoid = ".V".equals(retOllirType);
 
         String callExpr = invokeKind + "(" + receiver.getCode()
@@ -236,8 +227,7 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         String methodName = node.get("name");
         StringBuilder computation = new StringBuilder();
 
-        String className = table.getClassName();
-        String receiverCode = "this." + className;
+        String receiverCode = "this." + table.getClassName();
 
         StringBuilder argsCode = new StringBuilder();
         for (int i = 0; i < node.getNumChildren(); i++) {
@@ -247,6 +237,7 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         }
 
         JmmType retType = types.getExprType(node, currentMethod);
+        if (retType == null) retType = expectedReturnType;
         String retOllirType = retType != null ? ollirTypes.toOllirType(retType) : ".V";
         boolean isVoid = ".V".equals(retOllirType);
 
@@ -264,7 +255,7 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         }
     }
 
-    // ── Object creation ──────────────────────────────────────────────────────
+    // ── Object creation (3.1.4) ──────────────────────────────────────────────
 
     private OllirExprResult visitNewExpr(JmmNode node, Void unused) {
         String className = node.get("name");
@@ -354,10 +345,6 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    /**
-     * Returns true if {@code name} is a class field (not a local variable or parameter
-     * of the current method).
-     */
     private boolean isField(String name) {
         if (currentMethod != null) {
             if (currentMethod.getParameter(name).isPresent()) return false;
@@ -367,13 +354,12 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
     }
 
     /**
-     * Returns true if the receiver of a method call should use invokestatic.
-     * A VarRefExpr that resolves to an imported class name (not a variable) is static.
+     * Returns true if the receiver of a METHOD_CALL_EXPR should use invokestatic.
+     * A VarRefExpr that resolves to an imported class name (not a local/param/field) is static.
      */
     private boolean isStaticCall(JmmNode receiverNode) {
         if (!VAR_REF_EXPR.check(receiverNode)) return false;
         String name = receiverNode.get("name");
-        // If it is not a local/param/field, treat as class name → static
         if (currentMethod != null) {
             if (currentMethod.getParameter(name).isPresent()) return false;
             if (currentMethod.getLocalVariable(name).isPresent()) return false;
@@ -382,13 +368,7 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
         return table.getImportNames().contains(name) || table.isImplicitImport(name);
     }
 
-    /**
-     * Maps a JMM operator symbol to its OLLIR keyword.
-     * OLLIR uses the same symbols for arithmetic; for comparison, it uses the same symbols too.
-     * The OLLIR parser recognises: +, -, *, /, <, &&, ||, ==, !=, <=, >=
-     */
     private String jmmOpToOllir(String op) {
-        return op; // OLLIR uses the same operator symbols as JMM
+        return op;
     }
 }
-

@@ -21,7 +21,6 @@ import java.util.List;
  */
 public class InstantiationValidationPass extends AnalysisVisitorWithTable {
 
-    /** The method currently being visited, used for type resolution of arguments. */
     private MethodSymbol currentMethod;
 
     public InstantiationValidationPass(SymbolTable table) {
@@ -35,24 +34,24 @@ public class InstantiationValidationPass extends AnalysisVisitorWithTable {
         addVisit(JmmKind.NEW_EXPR,    this::visitNewExpr);
     }
 
-    /** Tracks the current method being analysed for scoped type resolution. */
+    // ------------------------------------------------------------------ //
+    //  Scope tracking
+    // ------------------------------------------------------------------ //
+
     private Void visitMethodDecl(JmmNode method, SymbolTable table) {
         var sig = types.getMethodDeclSignature(method);
         currentMethod = this.table.getMethod(sig).orElse(null);
         return null;
     }
 
-    /**
-     * Validates a {@code new X(args...)} expression.
-     *
-     * Checks that X is a known class (current or imported), then verifies
-     * argument types against the matching constructor in the symbol table.
-     * If the symbol table for X is unavailable, argument type checking is skipped.
-     */
+    // ------------------------------------------------------------------ //
+    //  new X(args...)
+    // ------------------------------------------------------------------ //
+
     private Void visitNewExpr(JmmNode newExpr, SymbolTable table) {
         String className = newExpr.get("name");
 
-        // 1. Class must be the current class or explicitly imported
+        // --- 1. Class must be imported or be the current class ---
         boolean isCurrentClass = className.equals(this.table.getClassName())
                 || className.equals(this.table.getFullyQualifiedName());
 
@@ -65,50 +64,47 @@ public class InstantiationValidationPass extends AnalysisVisitorWithTable {
             return null;
         }
 
-        // 2. Argument type checking (best-effort)
+        // --- 2. Argument type checking via symbol table ---
         List<JmmNode> argNodes = newExpr.getChildren();
 
-        if (argNodes.isEmpty()) {
-            // No-arg constructor — always structurally valid
-            return null;
-        }
-
-        // Resolve the symbol table for the instantiated class
-        var stOpt = this.table.getImportedSymbolTable(className);
+        // Resolve simple name to FQN if needed, then look up the symbol table
+        String fqn = this.table.getImportedFullyQualifiedName(className).orElse(className);
+        var stOpt = this.table.getImportedSymbolTable(fqn);
+        if (stOpt.isEmpty()) stOpt = this.table.getImportedSymbolTable(className);
         if (stOpt.isEmpty()) stOpt = this.table.getImplicitImport(className);
 
         if (stOpt.isEmpty()) {
-            // Cannot resolve ST for the class — skip argument type checks conservatively
+            // Cannot resolve ST — skip argument type checks conservatively
             return null;
         }
 
-        // Find a constructor (represented as "<init>") with matching arity
         var st = stOpt.get();
-        var constructors = st.getMethods("<init>").stream()
-                .filter(m -> m.parameters().size() == argNodes.size())
-                .toList();
+        var allConstructors = st.getMethods("<init>");
 
-        if (constructors.isEmpty()) {
-            addReport(newError(newExpr,
-                    "No constructor found in '" + className
-                            + "' that accepts " + argNodes.size() + " argument(s)"));
-            return null;
-        }
+        if (!allConstructors.isEmpty()) {
+            var matching = allConstructors.stream()
+                    .filter(m -> m.parameters().size() == argNodes.size())
+                    .toList();
 
-        // Verify each argument type against the first matching constructor
-        var constructor = constructors.get(0);
-        var params = constructor.parameters();
+            if (matching.isEmpty()) {
+                int expected = allConstructors.get(0).parameters().size();
+                addReport(newError(newExpr,
+                        "No constructor found in '" + className + "' that accepts "
+                                + argNodes.size() + " argument(s), expected " + expected));
+                return null;
+            }
 
-        for (int i = 0; i < params.size(); i++) {
-            var expected = params.get(i).type();
-            var actual   = types.getExprType(argNodes.get(i), currentMethod);
-
-            if (actual == null) continue; // unresolved — skip conservatively
-
-            if (!types.isTypeCompatible(expected, actual)) {
-                addReport(newError(argNodes.get(i),
-                        "Constructor argument " + (i + 1) + " of '" + className
-                                + "': expected '" + expected + "', got '" + actual + "'"));
+            var constructor = matching.get(0);
+            var params = constructor.parameters();
+            for (int i = 0; i < params.size(); i++) {
+                var expected = params.get(i).type();
+                var actual   = types.getExprType(argNodes.get(i), currentMethod);
+                if (actual == null) continue;
+                if (!types.isTypeCompatible(expected, actual)) {
+                    addReport(newError(argNodes.get(i),
+                            "Constructor argument " + (i + 1) + " of '" + className
+                                    + "': expected '" + expected + "', got '" + actual + "'"));
+                }
             }
         }
 

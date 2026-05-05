@@ -10,18 +10,6 @@ import pt.up.fe.specs.util.SpecsCheck;
 import java.util.*;
 import java.util.stream.Collectors;
 
-/**
- * Concrete implementation of the Java-- symbol table.
- *
- * Stores all information collected during symbol table construction:
- * imports, the class's fully qualified name, its superclass, fields, and methods.
- * Also supports arbitrary key-value attribute storage for extensibility.
- *
- * Import resolution supports three tiers:
- *   1. Explicit imports declared in the source file.
- *   2. Implicit imports handled by the {@link Importer}.
- *   3. Fully qualified names resolved directly through the importer.
- */
 public class JmmSymbolTable extends AJmmSymbolTable {
 
     private final List<String> imports;
@@ -30,28 +18,32 @@ public class JmmSymbolTable extends AJmmSymbolTable {
     private final Map<String, Symbol> fields;
     private final Map<Signature, MethodSymbol> methods;
 
+
     // TODO: Check if some uses of importNames can be replaced with getDeclaredClasses()
-    /** Set of simple class names extracted from all import declarations. */
     private final Set<String> importNames;
 
-    /** General-purpose attribute store for compiler extensions. */
     private final Map<String, Object> attrs;
 
     public JmmSymbolTable(List<String> imports, String classQualifiedName,
-                          String superQualifiedName, List<Symbol> fields,
+                          String superQualifiedNameName, List<Symbol> fields,
                           List<MethodSymbol> methods,
                           Importer importer) {
+//                          Map<String, Type> returnTypes,
+//                          Map<String, List<Symbol>> params,
+//                          Map<String, List<Symbol>> locals) {
         super(importer);
         this.imports = imports;
         this.classQualifiedName = classQualifiedName;
-        this.superQualifiedName = superQualifiedName;
-        this.fields  = fields.stream().collect(Collectors.toMap(Symbol::name, s -> s));
+        this.superQualifiedName = superQualifiedNameName;
+        this.fields = fields.stream().collect(Collectors.toMap(Symbol::name, s -> s));
         this.methods = methods.stream().collect(Collectors.toMap(MethodSymbol::signature, m -> m));
+//        this.returnTypes = returnTypes;
+//        this.params = params;
+//        this.locals = locals;
         this.importNames = calcImportNames(imports);
         this.attrs = new HashMap<>();
     }
 
-    /** Extracts the simple (last-segment) name from each fully qualified import string. */
     private Set<String> calcImportNames(List<String> imports) {
         return imports.stream()
                 .map(s -> s.split("\\."))
@@ -70,8 +62,9 @@ public class JmmSymbolTable extends AJmmSymbolTable {
     }
 
     /**
-     * Returns the set of all class names visible in this compilation unit:
-     * the simple names of all imports plus the current class's FQN.
+     * Represents available class names. Corresponds to the names of the imports + current class
+     *
+     * @return
      */
     public Set<String> getDeclaredClasses() {
         var declaredClasses = new HashSet<>(importNames);
@@ -79,9 +72,9 @@ public class JmmSymbolTable extends AJmmSymbolTable {
         return declaredClasses;
     }
 
+
     /**
-     * Returns the set of simple class names from all import declarations
-     * (i.e. only the last segment of each FQN, not the full path).
+     * @return the set of valid import class names (only the last name, not the fully qualified names)
      */
     public Set<String> getImportNames() {
         return importNames;
@@ -91,6 +84,7 @@ public class JmmSymbolTable extends AJmmSymbolTable {
     public List<String> getImports() {
         return imports;
     }
+
 
     @Override
     public List<Symbol> getFields() {
@@ -102,7 +96,6 @@ public class JmmSymbolTable extends AJmmSymbolTable {
         return methods.values().stream().toList();
     }
 
-    /** Returns all methods with the given simple name, regardless of signature. */
     @Override
     public List<MethodSymbol> getMethods(String name) {
         return methods.values().stream().filter(m -> m.name().equals(name)).toList();
@@ -118,10 +111,6 @@ public class JmmSymbolTable extends AJmmSymbolTable {
         return Optional.ofNullable(fields.getOrDefault(name, null));
     }
 
-    /**
-     * Finds the fully qualified import name whose last segment matches {@code simpleName}.
-     * Accepts both a plain simple name and a dot-prefixed match.
-     */
     @Override
     public Optional<String> getImportedFullyQualifiedName(String simpleName) {
         var dotName = "." + simpleName;
@@ -141,7 +130,9 @@ public class JmmSymbolTable extends AJmmSymbolTable {
     @Override
     public Object getObject(String attribute) {
         var value = attrs.get(attribute);
+
         SpecsCheck.checkNotNull(value, () -> "SymbolTable does not contain attribute '" + attribute + "'");
+
         return value;
     }
 
@@ -150,35 +141,29 @@ public class JmmSymbolTable extends AJmmSymbolTable {
         return attrs.put(attribute, value);
     }
 
-    /**
-     * Resolves the symbol table for a given class name.
-     * Tries, in order: the explicit import list, FQN resolution via the importer,
-     * and finally implicit import resolution.
-     *
-     * @param className simple name or FQN of the class to resolve.
-     * @return the corresponding symbol table, if available.
-     */
     public Optional<SymbolTable> getImportedSymbolTable(String className) {
+
         if (!this.imports.contains(className)) {
-            // className is already a FQN — attempt direct resolution
-            return this.importer.getSymbolTableOf(className);
+            // className is not a known FQN in imports — try as FQN directly, then as implicit
+            var st = this.importer.getSymbolTableOf(className);
+            if (st.isPresent()) return st;
+            return this.importer.tryImplicitImport(className);
         }
-        // Resolve simple name to FQN and look up
+        // className IS in our imports list; try to get its fully qualified name via suffix match
         var fullyQualifiedName = this.getImportedFullyQualifiedName(className);
         if (fullyQualifiedName.isPresent()) {
             return this.importer.getSymbolTableOf(fullyQualifiedName.get());
         }
-        // Fall back to implicit import
-        return this.importer.tryImplicitImport(className);
+        // className is already the FQN (it was in imports directly) — use it as-is
+        return this.importer.getSymbolTableOf(className);
     }
 
-    /** Returns true if the given class name is resolvable as an implicit import. */
     public boolean isImplicitImport(String className) {
         return importer.isImplicitImport(className);
     }
 
-    /** Returns the symbol table for the given implicit import class, if available. */
     public Optional<SymbolTable> getImplicitImport(String className) {
         return this.importer.tryImplicitImport(className);
     }
+
 }

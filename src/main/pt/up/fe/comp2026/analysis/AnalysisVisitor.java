@@ -18,7 +18,7 @@ public abstract class AnalysisVisitor extends PreorderJmmVisitor<SymbolTable, Vo
 
     public AnalysisVisitor() {
         reports = new ArrayList<>();
-        setDefaultValue(() -> null); 
+        setDefaultValue(() -> null);
     }
 
     protected void addReport(Report report) {

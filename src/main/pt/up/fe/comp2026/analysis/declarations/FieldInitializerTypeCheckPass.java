@@ -6,13 +6,6 @@ import pt.up.fe.comp.jmm.ast.JmmNode;
 import pt.up.fe.comp2026.analysis.AnalysisVisitorWithTable;
 import pt.up.fe.comp2026.jmm.ast.JmmKind;
 
-/**
- * Analysis pass that type-checks field initializer expressions.
- *
- * For each field declaration with an initializer ({@code type name = expr;}),
- * verifies that the type of the initializer expression is compatible with the
- * declared field type. Reports an error if they are incompatible.
- */
 public class FieldInitializerTypeCheckPass extends AnalysisVisitorWithTable {
 
     public FieldInitializerTypeCheckPass(SymbolTable table) {
@@ -25,21 +18,16 @@ public class FieldInitializerTypeCheckPass extends AnalysisVisitorWithTable {
         addVisit(JmmKind.FIELD_DECL, this::visitFieldDecl);
     }
 
-    /**
-     * Checks that the initializer expression of a field, if present, is type-compatible
-     * with the field's declared type.
-     *
-     * Note: the type node is stored as an object attribute rather than an AST child,
-     * so the only AST child of a field declaration (when present) is the initializer expression.
-     */
     private Void visitFieldDecl(JmmNode fieldDecl, SymbolTable table) {
         // Grammar: fieldDecl : typeNode=type name=ID ('=' expr)? ';'
-        // typeNode is stored as object attribute, not as AST child;
-        // the only child node, if any, is the initializer expression.
+        // typeNode is stored as object attribute, not as AST child
+        // The expr initializer IS a child node when present
+        // Since type is stored as object, children are only: [expr] if initializer exists
+
         var typeNode = fieldDecl.getObject("typeNode", JmmNode.class);
         JmmType declaredType = types.convertType(typeNode);
 
-        // Find the initializer expression — any child that is not a TYPE node
+        // Find expr child — it's any child that is not a TYPE node
         JmmNode initExpr = null;
         for (JmmNode child : fieldDecl.getChildren()) {
             if (!JmmKind.TYPE.check(child)) {
@@ -48,10 +36,10 @@ public class FieldInitializerTypeCheckPass extends AnalysisVisitorWithTable {
             }
         }
 
-        if (initExpr == null) return null; // no initializer — nothing to check
+        if (initExpr == null) return null; // no initializer
 
         JmmType initType = types.getExprType(initExpr, null);
-        if (initType == null) return null; // unresolved type — skip conservatively
+        if (initType == null) return null;
 
         if (!types.isTypeCompatible(declaredType, initType)) {
             addReport(newError(initExpr,

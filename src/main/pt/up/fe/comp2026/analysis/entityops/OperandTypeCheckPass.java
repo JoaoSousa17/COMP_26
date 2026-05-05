@@ -8,19 +8,7 @@ import pt.up.fe.comp.jmm.ast.JmmNode;
 import pt.up.fe.comp2026.analysis.AnalysisVisitorWithTable;
 import pt.up.fe.comp2026.jmm.ast.JmmKind;
 
-/**
- * Analysis pass that validates operand types for unary and binary expressions.
- *
- * Rules enforced:
- *   - Arithmetic and relational operators ({@code +, -, *, /, %, <, >, <=, >=}) require int operands.
- *   - Logical operators ({@code &&, ||}) require boolean operands.
- *   - Equality operators ({@code ==, !=}) require both operands to be the same type.
- *   - The logical negation operator ({@code !}) requires a boolean operand.
- *   - Prefix increment/decrement ({@code ++, --}) and unary {@code +/-} require an int operand.
- */
 public class OperandTypeCheckPass extends AnalysisVisitorWithTable {
-
-    /** The method currently being visited, used for type resolution. */
     private MethodSymbol currentMethod;
 
     public OperandTypeCheckPass(SymbolTable table) {
@@ -30,27 +18,21 @@ public class OperandTypeCheckPass extends AnalysisVisitorWithTable {
 
     @Override
     protected void buildVisitor() {
-        addVisit(JmmKind.METHOD_DECL,      this::visitMethodDecl);
-        addVisit(JmmKind.BINARY_EXPR,      this::visitBinaryExpr);
-        addVisit(JmmKind.UNARY_EXPR,       this::visitUnaryExpr);
-        addVisit(JmmKind.PLUS_PLUS_EXPR,   this::visitIntUnaryExpr);
-        addVisit(JmmKind.MINUS_MINUS_EXPR, this::visitIntUnaryExpr);
-        addVisit(JmmKind.PLUS_EXPR,        this::visitIntUnaryExpr);
-        addVisit(JmmKind.MINUS_EXPR,       this::visitIntUnaryExpr);
+        addVisit(JmmKind.METHOD_DECL, this::visitMethodDecl);
+        addVisit(JmmKind.BINARY_EXPR, this::visitBinaryExpr);
+        addVisit(JmmKind.UNARY_EXPR,  this::visitUnaryExpr);
+        addVisit(JmmKind.PLUS_EXPR, this::visitUnaryArithExpr);
+        addVisit(JmmKind.MINUS_EXPR, this::visitUnaryArithExpr);
+        addVisit(JmmKind.PLUS_PLUS_EXPR, this::visitUnaryArithExpr);
+        addVisit(JmmKind.MINUS_MINUS_EXPR, this::visitUnaryArithExpr);
     }
 
-    /** Tracks the current method being analysed for scoped type resolution. */
     private Void visitMethodDecl(JmmNode method, SymbolTable table) {
-        currentMethod = this.table.getMethod(types.getMethodDeclSignature(method)).orElse(null);
+        currentMethod =
+                this.table.getMethod(types.getMethodDeclSignature(method)).orElse(null);
         return null;
     }
 
-    /**
-     * Validates operand types for a binary expression according to the operator:
-     *   - Arithmetic/relational: both operands must be int.
-     *   - Logical: both operands must be boolean.
-     *   - Equality: both operands must be the same type.
-     */
     private Void visitBinaryExpr(JmmNode expr, SymbolTable table) {
         String op = expr.get("op");
         JmmType left  = types.getExprType(expr.getChild(0), currentMethod);
@@ -78,7 +60,6 @@ public class OperandTypeCheckPass extends AnalysisVisitorWithTable {
         return null;
     }
 
-    /** Validates that the operand of the {@code !} operator is of type boolean. */
     private Void visitUnaryExpr(JmmNode expr, SymbolTable table) {
         JmmType t = types.getExprType(expr.getChild(0), currentMethod);
         if (t != null && !t.equals(JmmPrimitiveType.BOOLEAN))
@@ -86,14 +67,13 @@ public class OperandTypeCheckPass extends AnalysisVisitorWithTable {
         return null;
     }
 
-    /** Validates that the operand of {@code ++}, {@code --}, unary {@code +}, or unary {@code -} is of type int. */
-    private Void visitIntUnaryExpr(JmmNode expr, SymbolTable table) {
-        JmmNode operand = expr.getChild(0);
-        JmmType t = types.getExprType(operand, currentMethod);
-        if (t != null && !t.equals(JmmPrimitiveType.INT)) {
-            String op = String.valueOf(expr.getKind());
-            addReport(newError(operand, "Operand of '" + op + "' must be int, got '" + t + "'"));
-        }
+    private Void visitUnaryArithExpr(JmmNode expr, SymbolTable table) {
+        String op = expr.get("op");
+        JmmType t = types.getExprType(expr.getChild(0), currentMethod);
+        if (t != null && !t.equals(JmmPrimitiveType.INT))
+            addReport(newError(expr.getChild(0), "Operand of '" + op + "' must be int, got '" + t + "'"));
+
         return null;
     }
+
 }

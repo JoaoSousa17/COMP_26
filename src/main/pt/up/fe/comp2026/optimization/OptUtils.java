@@ -1,9 +1,5 @@
 package pt.up.fe.comp2026.optimization;
 
-import org.specs.comp.ollir.Element;
-import org.specs.comp.ollir.LiteralElement;
-import org.specs.comp.ollir.type.BuiltinKind;
-import org.specs.comp.ollir.type.BuiltinType;
 import pt.up.fe.comp.jmm.analysis.table.type.impls.JmmPrimitiveType;
 import pt.up.fe.comp.jmm.analysis.table.type.JmmType;
 import pt.up.fe.comp.jmm.analysis.table.type.impls.JmmArrayType;
@@ -67,21 +63,31 @@ public class OptUtils {
         if (type instanceof JmmArrayType arr) {
             // JmmArrayType does not expose getItemType() in this API.
             // Infer element type from toString, e.g. "JmmArrayType[itemType=INT, dimension=1]"
-            // or "JmmArrayType[itemType=JmmClassType[name=java.lang.String,...], dimension=1]"
             String s = arr.toString();
             if (s.contains("BOOLEAN")) return ".array.bool";
             if (s.contains("itemType=INT") || (s.contains("INT") && !s.contains("itemType=J"))) return ".array.i32";
-            // Class array — extract name after "itemType="
+            // Class array — extract simple name from JmmClassType representation
             int idx = s.indexOf("itemType=");
             if (idx >= 0) {
-                // Check for nested JmmClassType
                 if (s.contains("itemType=JmmClassType")) {
-                    int nameIdx = s.indexOf("name=", idx);
-                    if (nameIdx >= 0) {
-                        int end = s.indexOf(",", nameIdx);
-                        if (end < 0) end = s.indexOf("]", nameIdx);
+                    int fqnIdx = s.indexOf("fullyQualifiedName=", idx);
+                    if (fqnIdx >= 0) {
+                        int start = fqnIdx + "fullyQualifiedName=".length();
+                        int end = s.indexOf(",", start);
+                        if (end < 0) end = s.indexOf("]", start);
                         if (end > 0) {
-                            String raw = s.substring(nameIdx + "name=".length(), end).trim();
+                            String raw = s.substring(start, end).trim();
+                            int dot = raw.lastIndexOf('.');
+                            return ".array." + (dot >= 0 ? raw.substring(dot + 1) : raw);
+                        }
+                    }
+                    int nameIdx = s.indexOf("[name=", idx);
+                    if (nameIdx >= 0) {
+                        int start = nameIdx + "[name=".length();
+                        int end = s.indexOf(",", start);
+                        if (end < 0) end = s.indexOf("]", start);
+                        if (end > 0) {
+                            String raw = s.substring(start, end).trim();
                             int dot = raw.lastIndexOf('.');
                             return ".array." + (dot >= 0 ? raw.substring(dot + 1) : raw);
                         }
@@ -98,7 +104,6 @@ public class OptUtils {
             return ".array.i32";
         }
         if (type instanceof JmmClassType cls) {
-            // Use simple class name for OLLIR
             String name = cls.name();
             int dot = name.lastIndexOf('.');
             return "." + (dot >= 0 ? name.substring(dot + 1) : name);
