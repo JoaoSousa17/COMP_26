@@ -24,40 +24,38 @@ public class JmmOptimizationImpl implements JmmOptimization {
             return semanticsResult;
         }
 
-        // Phase 1: Constant Propagation + Constant Folding loop (to fixed point)
-        boolean changed;
-        do {
-            var propagation = new ConstantPropagationVisitor();
-            propagation.visit(semanticsResult.getRootNode());
-
-            var folding = new ConstantFoldingVisitor();
-            folding.visit(semanticsResult.getRootNode());
-
-            changed = propagation.hasChanged() || folding.hasChanged();
-        } while (changed);
-
-        // Phase 2: Dead Code Elimination loop (to fixed point, separate from prop/fold)
-        do {
-            var dce = new DeadCodeEliminationVisitor();
-            dce.visit(semanticsResult.getRootNode());
-            changed = dce.hasChanged();
-        } while (changed);
-
-        // Phase 3: One more round of Prop+Fold in case DCE exposed new opportunities,
-        // then DCE again — repeat until truly stable
+        // Run all AST optimizations to a fixed point.
+        // Order per iteration:
+        //   1. Constant Propagation
+        //   2. Constant Folding
+        //   3. Branch Elimination  (needs folded literals to work)
+        //   4. Dead Code Elimination
         boolean anyChange;
         do {
             anyChange = false;
 
+            // Constant Propagation + Folding loop
+            boolean changed;
             do {
                 var propagation = new ConstantPropagationVisitor();
                 propagation.visit(semanticsResult.getRootNode());
+
                 var folding = new ConstantFoldingVisitor();
                 folding.visit(semanticsResult.getRootNode());
+
                 changed = propagation.hasChanged() || folding.hasChanged();
                 if (changed) anyChange = true;
             } while (changed);
 
+            // Branch Elimination — runs after folding to catch literal conditions
+            do {
+                var branchElim = new BranchEliminationVisitor();
+                branchElim.visit(semanticsResult.getRootNode());
+                changed = branchElim.hasChanged();
+                if (changed) anyChange = true;
+            } while (changed);
+
+            // Dead Code Elimination
             do {
                 var dce = new DeadCodeEliminationVisitor();
                 dce.visit(semanticsResult.getRootNode());

@@ -16,11 +16,6 @@ import static pt.up.fe.comp2026.jmm.ast.JmmKind.*;
 
 /**
  * Generates OLLIR code from JmmNodes that are not expressions.
- *
- * 3.1.2 — Statements:
- *   • Return statements  (visitReturn)
- *   • Conditional instructions  (visitIfElseStmt, visitIfStmt)
- *   • While loops  (visitWhileStmt)
  */
 public class OllirGeneratorVisitor extends AJmmVisitor<Void, String> {
 
@@ -58,6 +53,8 @@ public class OllirGeneratorVisitor extends AJmmVisitor<Void, String> {
         addVisit(IF_ELSE_STMT,     this::visitIfElseStmt);
         addVisit(IF_STMT,          this::visitIfStmt);
         addVisit(WHILE_STMT,       this::visitWhileStmt);
+        addVisit(FOR_STMT,         this::visitForStmt);
+        addVisit(DO_WHILE_STMT,    this::visitDoWhileStmt);
         addVisit(ASSIGN_STMT,      this::visitAssignStmt);
         addVisit(BLOCK,            this::visitBlock);
         addVisit(EXPR_STMT,        this::visitExprStmt);
@@ -211,11 +208,8 @@ public class OllirGeneratorVisitor extends AJmmVisitor<Void, String> {
             }
         }
 
-        // For void methods, ensure there's always a ret.V at the end.
-        // JMM allows void methods without explicit return, but OLLIR requires it.
         if (JmmPrimitiveType.VOID.equals(currentMethod.returnType())) {
             String body = bodyCode.toString();
-            // Only add ret.V if the body doesn't already end with a return
             if (!body.stripTrailing().endsWith("ret.V;")) {
                 bodyCode.append("   ret.V;\n");
             }
@@ -304,6 +298,139 @@ public class OllirGeneratorVisitor extends AJmmVisitor<Void, String> {
         code.append("goto ").append(labelLoop).append(END_STMT);
 
         code.append(labelEnd).append(":").append(NL);
+        return code.toString();
+    }
+
+    // ── 3.1.2 Do-While ───────────────────────────────────────────────────────
+
+    private String visitDoWhileStmt(JmmNode node, Void unused) {
+        String labelLoop = ollirTypes.nextLabel("doWhileLoop_");
+        String labelEnd  = ollirTypes.nextLabel("doWhileEnd_");
+
+        StringBuilder code = new StringBuilder();
+        code.append(labelLoop).append(":").append(NL);
+
+        // child 0 = body stmt, child 1 = condition expr
+        code.append(indentBlock(visit(node.getChild(0))));
+
+        var cond = exprVisitor.visit(node.getChild(1));
+        code.append(cond.getComputation());
+        code.append("if (").append(cond.getCode()).append(") goto ").append(labelLoop).append(END_STMT);
+        code.append(labelEnd).append(":").append(NL);
+
+        return code.toString();
+    }
+
+    // ── 3.1.2 For ────────────────────────────────────────────────────────────
+
+    /**
+     * for (init; cond; update) body
+     *
+     * Grammar children of FOR_STMT (all optional):
+     *   FOR_INIT   — contains one ASSIGNMENT child:  name = expr
+     *   FOR_COND   — contains one expr child
+     *   FOR_UPDATE — contains one ASSIGNMENT child:  name = expr
+     *   <body stmt>
+     *
+     * OLLIR output:
+     *   <init assignment>
+     *   forLoop_N:
+     *   if (<cond>) goto forBody_N;
+     *   goto forEnd_N;
+     *   forBody_N:
+     *   <body>
+     *   <update assignment>
+     *   goto forLoop_N;
+     *   forEnd_N:
+     */
+    private String visitForStmt(JmmNode node, Void unused) {
+        String labelLoop = ollirTypes.nextLabel("forLoop_");
+        String labelBody = ollirTypes.nextLabel("forBody_");
+        String labelEnd  = ollirTypes.nextLabel("forEnd_");
+
+        StringBuilder code = new StringBuilder();
+
+        // ── Init ──────────────────────────────────────────────────────────────
+        var forInitOpt = node.getChildren().stream()
+                .filter(c -> FOR_INIT.check(c))
+                .findFirst();
+
+        if (forInitOpt.isPresent()) {
+            JmmNode assignNode = forInitOpt.get().getChild(0); // ASSIGNMENT node
+            code.append(generateAssignment(assignNode));
+        }
+
+        // ── Loop header ───────────────────────────────────────────────────────
+        code.append(labelLoop).append(":").append(NL);
+
+        var forCondOpt = node.getChildren().stream()
+                .filter(c -> FOR_COND.check(c))
+                .findFirst();
+
+        if (forCondOpt.isPresent() && forCondOpt.get().getNumChildren() > 0) {
+            var cond = exprVisitor.visit(forCondOpt.get().getChild(0));
+            code.append(cond.getComputation());
+            code.append("if (").append(cond.getCode()).append(") goto ").append(labelBody).append(END_STMT);
+            code.append("goto ").append(labelEnd).append(END_STMT);
+        } else {
+            // No condition — infinite loop (unconditional jump to body)
+            code.append("goto ").append(labelBody).append(END_STMT);
+        }
+
+        // ── Body ──────────────────────────────────────────────────────────────
+        code.append(labelBody).append(":").append(NL);
+
+        // The body is the last child that is not FOR_INIT / FOR_COND / FOR_UPDATE
+        var bodyOpt = node.getChildren().stream()
+                .filter(c -> !FOR_INIT.check(c) && !FOR_COND.check(c) && !FOR_UPDATE.check(c))
+                .findFirst();
+
+        if (bodyOpt.isPresent()) {
+            code.append(indentBlock(visit(bodyOpt.get())));
+        }
+
+        // ── Update ────────────────────────────────────────────────────────────
+        var forUpdateOpt = node.getChildren().stream()
+                .filter(c -> FOR_UPDATE.check(c))
+                .findFirst();
+
+        if (forUpdateOpt.isPresent()) {
+            JmmNode assignNode = forUpdateOpt.get().getChild(0); // ASSIGNMENT node
+            code.append(generateAssignment(assignNode));
+        }
+
+        code.append("goto ").append(labelLoop).append(END_STMT);
+        code.append(labelEnd).append(":").append(NL);
+
+        return code.toString();
+    }
+
+    /**
+     * Generates OLLIR for an ASSIGNMENT node (used in for-init and for-update).
+     * Grammar: assignment : name=ID '=' expr
+     */
+    private String generateAssignment(JmmNode assignNode) {
+        String varName = assignNode.get("name");
+        JmmType varType = resolveVarType(varName);
+        String typeStr = ollirTypes.toOllirType(varType);
+
+        exprVisitor.expectedReturnType = varType;
+        var rhs = exprVisitor.visit(assignNode.getChild(0));
+        exprVisitor.expectedReturnType = null;
+
+        StringBuilder code = new StringBuilder();
+        code.append(rhs.getComputation());
+
+        if (isField(varName)) {
+            code.append("putfield(this.").append(table.getClassName()).append(", ")
+                    .append(ollirTypes.sanitizeId(varName)).append(typeStr).append(", ")
+                    .append(rhs.getCode()).append(").V").append(END_STMT);
+        } else {
+            code.append(ollirTypes.sanitizeId(varName)).append(typeStr)
+                    .append(SPACE).append(ASSIGN).append(typeStr).append(SPACE)
+                    .append(rhs.getCode()).append(END_STMT);
+        }
+
         return code.toString();
     }
 
