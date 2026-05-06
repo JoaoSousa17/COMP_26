@@ -4,6 +4,7 @@ import pt.up.fe.comp.jmm.analysis.table.MethodSymbol;
 import pt.up.fe.comp.jmm.analysis.table.SymbolTable;
 import pt.up.fe.comp.jmm.analysis.table.Visibility;
 import pt.up.fe.comp.jmm.analysis.table.type.JmmType;
+import pt.up.fe.comp.jmm.analysis.table.type.impls.JmmArrayType;
 import pt.up.fe.comp.jmm.analysis.table.type.impls.JmmPrimitiveType;
 import pt.up.fe.comp.jmm.ast.AJmmVisitor;
 import pt.up.fe.comp.jmm.ast.JmmNode;
@@ -463,21 +464,18 @@ public class OllirGeneratorVisitor extends AJmmVisitor<Void, String> {
     private String visitArrayStoreStmt(JmmNode node, Void unused) {
         String varName = node.get("name");
         int numChildren = node.getNumChildren();
-
-        var index = exprVisitor.visit(node.getChild(0));
-        var value = exprVisitor.visit(node.getChild(numChildren - 1));
-
-        StringBuilder code = new StringBuilder();
-        code.append(index.getComputation());
-        code.append(value.getComputation());
+        int numIndices = numChildren - 1;
+        JmmNode valueNode = node.getChild(numChildren - 1);
 
         JmmType arrType = resolveVarType(varName);
-        JmmType elemType = (arrType instanceof pt.up.fe.comp.jmm.analysis.table.type.impls.JmmArrayType arr)
-                ? inferArrayElemType(arr)
-                : JmmPrimitiveType.INT;
-        String elemTypeStr = ollirTypes.toOllirType(elemType);
 
-        String arrayVarCode;
+        StringBuilder code = new StringBuilder();
+
+        // Se há múltiplos índices (array multidimensional), precisamos de flatten:
+        // a[i][j] = v  →  tmp = a[i]; tmp[j] = v
+        String currentVarCode;
+        JmmType currentType = arrType;
+
         if (isField(varName)) {
             String arrOllirType = ollirTypes.toOllirType(arrType);
             String tmpArr = ollirTypes.nextTemp() + arrOllirType;
@@ -485,13 +483,44 @@ public class OllirGeneratorVisitor extends AJmmVisitor<Void, String> {
                     .append("getfield(this.").append(table.getClassName()).append(", ")
                     .append(ollirTypes.sanitizeId(varName)).append(arrOllirType)
                     .append(")").append(arrOllirType).append(END_STMT);
-            arrayVarCode = tmpArr;
+            currentVarCode = tmpArr;
         } else {
-            arrayVarCode = ollirTypes.sanitizeId(varName) + ".array" + elemTypeStr;
+            currentVarCode = ollirTypes.sanitizeId(varName) + ollirTypes.toOllirType(arrType);
         }
 
-        code.append(arrayVarCode)
-                .append("[").append(index.getCode()).append("]").append(elemTypeStr)
+        // Para cada índice intermédio (todos exceto o último), fazer load
+        for (int i = 0; i < numIndices - 1; i++) {
+            var index = exprVisitor.visit(node.getChild(i));
+            code.append(index.getComputation());
+
+            if (!(currentType instanceof JmmArrayType arr)) break;
+            JmmType elemType = arr.dimension() == 1
+                    ? arr.itemType()
+                    : new JmmArrayType(arr.itemType(), arr.dimension() - 1);
+            String elemOllirType = ollirTypes.toOllirType(elemType);
+            String tmp = ollirTypes.nextTemp() + elemOllirType;
+
+            code.append(tmp).append(SPACE).append(ASSIGN).append(elemOllirType).append(SPACE)
+                    .append(currentVarCode).append("[").append(index.getCode()).append("]")
+                    .append(elemOllirType).append(END_STMT);
+
+            currentVarCode = tmp;
+            currentType = elemType;
+        }
+
+        // Índice final + valor
+        var lastIndex = exprVisitor.visit(node.getChild(numIndices - 1));
+        var value = exprVisitor.visit(valueNode);
+        code.append(lastIndex.getComputation());
+        code.append(value.getComputation());
+
+        JmmType elemType = (currentType instanceof pt.up.fe.comp.jmm.analysis.table.type.impls.JmmArrayType arr)
+                ? (arr.dimension() == 1 ? arr.itemType() : new JmmArrayType(arr.itemType(), arr.dimension() - 1))
+                : JmmPrimitiveType.INT;
+        String elemTypeStr = ollirTypes.toOllirType(elemType);
+
+        code.append(currentVarCode)
+                .append("[").append(lastIndex.getCode()).append("]").append(elemTypeStr)
                 .append(SPACE).append(ASSIGN).append(elemTypeStr).append(SPACE)
                 .append(value.getCode()).append(END_STMT);
 

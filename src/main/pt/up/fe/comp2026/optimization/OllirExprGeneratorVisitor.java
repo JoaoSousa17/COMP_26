@@ -420,21 +420,41 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
     }
 
     private OllirExprResult visitArrayLoad(JmmNode node, Void unused) {
-        var array = visit(node.getChild(0));
-        var index = visit(node.getChild(1));
+        // Para a[i][j], o AST tem: ArrayLoadExpr -> [array, index1, index2]
+        // Precisamos de "flatten": primeiro lê a[i] (devolve int[]), depois lê resultado[j]
+
+        int numIndices = node.getNumChildren() - 1;
+
+        // Resultado inicial: o próprio array (filho 0)
+        var current = visit(node.getChild(0));
         StringBuilder computation = new StringBuilder();
-        computation.append(array.getComputation());
-        computation.append(index.getComputation());
+        computation.append(current.getComputation());
 
-        JmmType elemType = types.getExprType(node, currentMethod);
-        String elemOllirType = ollirTypes.toOllirType(elemType);
-        String tmp = ollirTypes.nextTemp() + elemOllirType;
+        JmmType currentType = types.getExprType(node.getChild(0), currentMethod);
 
-        computation.append(tmp).append(SPACE).append(ASSIGN).append(elemOllirType).append(SPACE)
-                .append(array.getCode()).append("[").append(index.getCode()).append("]")
-                .append(elemOllirType).append(END_STMT);
+        for (int i = 1; i <= numIndices; i++) {
+            var index = visit(node.getChild(i));
+            computation.append(index.getComputation());
 
-        return new OllirExprResult(tmp, computation);
+            if (!(currentType instanceof JmmArrayType arr)) break;
+
+            // Após um acesso, o tipo resultante perde uma dimensão
+            JmmType elemType = arr.dimension() == 1
+                    ? arr.itemType()
+                    : new JmmArrayType(arr.itemType(), arr.dimension() - 1);
+
+            String elemOllirType = ollirTypes.toOllirType(elemType);
+            String tmp = ollirTypes.nextTemp() + elemOllirType;
+
+            computation.append(tmp).append(SPACE).append(ASSIGN).append(elemOllirType).append(SPACE)
+                    .append(current.getCode()).append("[").append(index.getCode()).append("]")
+                    .append(elemOllirType).append(END_STMT);
+
+            current = new OllirExprResult(tmp, "");
+            currentType = elemType;
+        }
+
+        return new OllirExprResult(current.getCode(), computation);
     }
 
     private OllirExprResult visitNewArrayExpr(JmmNode node, Void unused) {
