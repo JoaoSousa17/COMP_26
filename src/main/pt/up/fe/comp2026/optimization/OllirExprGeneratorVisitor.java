@@ -142,16 +142,6 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
 
     /**
      * Short-circuit AND: a && b
-     *
-     * tmp := 0.bool;
-     * if (a) goto andCheck_;
-     * goto andEnd_;
-     * andCheck_:
-     * if (b) goto andTrue_;
-     * goto andEnd_;
-     * andTrue_:
-     * tmp := 1.bool;
-     * andEnd_:
      */
     private OllirExprResult visitAndExpr(JmmNode node) {
         var lhs = visit(node.getChild(0));
@@ -164,23 +154,16 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
 
         StringBuilder computation = new StringBuilder();
 
-        // Evaluate lhs
         computation.append(lhs.getComputation());
-
-        // Start as false
         computation.append(tmp).append(SPACE).append(ASSIGN).append(".bool 0.bool").append(END_STMT);
-
-        // If lhs is true, go check rhs
         computation.append("if (").append(lhs.getCode()).append(") goto ").append(labelCheck).append(END_STMT);
         computation.append("goto ").append(labelEnd).append(END_STMT);
 
-        // Check rhs
         computation.append(labelCheck).append(":\n");
         computation.append(rhs.getComputation());
         computation.append("if (").append(rhs.getCode()).append(") goto ").append(labelTrue).append(END_STMT);
         computation.append("goto ").append(labelEnd).append(END_STMT);
 
-        // Both true
         computation.append(labelTrue).append(":\n");
         computation.append(tmp).append(SPACE).append(ASSIGN).append(".bool 1.bool").append(END_STMT);
 
@@ -191,12 +174,6 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
 
     /**
      * Short-circuit OR: a || b
-     *
-     * tmp := 1.bool;          // assume true
-     * if (a) goto orEnd_;     // short-circuit: a is true → done
-     * if (b) goto orEnd_;     // b is true → done
-     * tmp := 0.bool;          // both false
-     * orEnd_:
      */
     private OllirExprResult visitOrExpr(JmmNode node) {
         var lhs = visit(node.getChild(0));
@@ -207,24 +184,12 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
 
         StringBuilder computation = new StringBuilder();
 
-        // Evaluate lhs
         computation.append(lhs.getComputation());
-
-        // Start as true (optimistic)
         computation.append(tmp).append(SPACE).append(ASSIGN).append(".bool 1.bool").append(END_STMT);
-
-        // If lhs is true, short-circuit to end (result stays true)
         computation.append("if (").append(lhs.getCode()).append(") goto ").append(labelEnd).append(END_STMT);
-
-        // Evaluate rhs
         computation.append(rhs.getComputation());
-
-        // If rhs is true, short-circuit to end (result stays true)
         computation.append("if (").append(rhs.getCode()).append(") goto ").append(labelEnd).append(END_STMT);
-
-        // Both false — set result to false
         computation.append(tmp).append(SPACE).append(ASSIGN).append(".bool 0.bool").append(END_STMT);
-
         computation.append(labelEnd).append(":\n");
 
         return new OllirExprResult(tmp, computation);
@@ -420,12 +385,8 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
     }
 
     private OllirExprResult visitArrayLoad(JmmNode node, Void unused) {
-        // Para a[i][j], o AST tem: ArrayLoadExpr -> [array, index1, index2]
-        // Precisamos de "flatten": primeiro lê a[i] (devolve int[]), depois lê resultado[j]
-
         int numIndices = node.getNumChildren() - 1;
 
-        // Resultado inicial: o próprio array (filho 0)
         var current = visit(node.getChild(0));
         StringBuilder computation = new StringBuilder();
         computation.append(current.getComputation());
@@ -438,7 +399,6 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
 
             if (!(currentType instanceof JmmArrayType arr)) break;
 
-            // Após um acesso, o tipo resultante perde uma dimensão
             JmmType elemType = arr.dimension() == 1
                     ? arr.itemType()
                     : new JmmArrayType(arr.itemType(), arr.dimension() - 1);
@@ -459,21 +419,52 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
 
     private OllirExprResult visitNewArrayExpr(JmmNode node, Void unused) {
         StringBuilder computation = new StringBuilder();
-        StringBuilder sizeArgs = new StringBuilder();
-        for (int i = 0; i < node.getNumChildren(); i++) {
+
+        // Collect all size expressions
+        int numDimensions = node.getNumChildren();
+        String[] sizeCodeArr = new String[numDimensions];
+        for (int i = 0; i < numDimensions; i++) {
             var sizeExpr = visit(node.getChild(i));
             computation.append(sizeExpr.getComputation());
-            if (i > 0) sizeArgs.append(", ");
-            sizeArgs.append(sizeExpr.getCode());
+            sizeCodeArr[i] = sizeExpr.getCode();
         }
 
-        JmmType arrType = types.getExprType(node, currentMethod);
+        // Determine the base element type from the declared array type.
+        // For `new int[2][3]`, getExprType may return JmmArrayType(int, 2) or JmmArrayType(int, 1).
+        // We need to produce a type with exactly `numDimensions` array wrappers over the primitive base.
+        JmmType declaredType = types.getExprType(node, currentMethod);
+
+        // Walk down to the innermost non-array type (the base element type)
+        JmmType baseType = declaredType;
+        while (baseType instanceof JmmArrayType arr) {
+            baseType = arr.itemType();
+        }
+
+        // Re-wrap with exactly numDimensions levels of array
+        JmmType arrType = buildArrayType(baseType, numDimensions);
         String arrOllirType = ollirTypes.toOllirType(arrType);
+
+        // Build args string: all size args comma-separated
+        StringBuilder sizeArgs = new StringBuilder();
+        for (int i = 0; i < numDimensions; i++) {
+            if (i > 0) sizeArgs.append(", ");
+            sizeArgs.append(sizeCodeArr[i]);
+        }
+
         String tmp = ollirTypes.nextTemp() + arrOllirType;
         computation.append(tmp).append(SPACE).append(ASSIGN).append(arrOllirType).append(SPACE)
                 .append("new(array, ").append(sizeArgs).append(")").append(arrOllirType).append(END_STMT);
 
         return new OllirExprResult(tmp, computation);
+    }
+
+    /**
+     * Builds a JmmArrayType with the given number of dimensions over the base type.
+     * e.g. buildArrayType(int, 2) → JmmArrayType(int, 2)  →  .array.array.i32
+     */
+    private JmmType buildArrayType(JmmType baseType, int dimensions) {
+        if (dimensions <= 0) return baseType;
+        return new JmmArrayType(baseType, dimensions);
     }
 
     private OllirExprResult visitArrayInitializer(JmmNode node, Void unused) {

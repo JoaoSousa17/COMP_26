@@ -54,54 +54,16 @@ public class OptUtils {
 
     /**
      * Converts a JmmType to its OLLIR type suffix (e.g. ".i32", ".bool", ".V",
-     * ".array.i32", ".ClassName").
+     * ".array.i32", ".array.array.i32", ".ClassName").
      */
     public String toOllirType(JmmType type) {
         if (type instanceof JmmPrimitiveType prim) {
             return "." + toPrimitiveOllirType(prim);
         }
         if (type instanceof JmmArrayType arr) {
-            // JmmArrayType does not expose getItemType() in this API.
-            // Infer element type from toString, e.g. "JmmArrayType[itemType=INT, dimension=1]"
-            String s = arr.toString();
-            if (s.contains("BOOLEAN")) return ".array.bool";
-            if (s.contains("itemType=INT") || (s.contains("INT") && !s.contains("itemType=J"))) return ".array.i32";
-            // Class array — extract simple name from JmmClassType representation
-            int idx = s.indexOf("itemType=");
-            if (idx >= 0) {
-                if (s.contains("itemType=JmmClassType")) {
-                    int fqnIdx = s.indexOf("fullyQualifiedName=", idx);
-                    if (fqnIdx >= 0) {
-                        int start = fqnIdx + "fullyQualifiedName=".length();
-                        int end = s.indexOf(",", start);
-                        if (end < 0) end = s.indexOf("]", start);
-                        if (end > 0) {
-                            String raw = s.substring(start, end).trim();
-                            int dot = raw.lastIndexOf('.');
-                            return ".array." + (dot >= 0 ? raw.substring(dot + 1) : raw);
-                        }
-                    }
-                    int nameIdx = s.indexOf("[name=", idx);
-                    if (nameIdx >= 0) {
-                        int start = nameIdx + "[name=".length();
-                        int end = s.indexOf(",", start);
-                        if (end < 0) end = s.indexOf("]", start);
-                        if (end > 0) {
-                            String raw = s.substring(start, end).trim();
-                            int dot = raw.lastIndexOf('.');
-                            return ".array." + (dot >= 0 ? raw.substring(dot + 1) : raw);
-                        }
-                    }
-                }
-                int end = s.indexOf(",", idx);
-                if (end < 0) end = s.indexOf("]", idx);
-                if (end > 0) {
-                    String raw = s.substring(idx + "itemType=".length(), end).trim();
-                    int dot = raw.lastIndexOf('.');
-                    return ".array." + (dot >= 0 ? raw.substring(dot + 1) : raw);
-                }
-            }
-            return ".array.i32";
+            // Recursively build the type: one ".array" per dimension, then the base type
+            String baseType = toOllirType(arr.itemType());
+            return ".array".repeat(arr.dimension()) + baseType;
         }
         if (type instanceof JmmClassType cls) {
             String name = cls.name();
