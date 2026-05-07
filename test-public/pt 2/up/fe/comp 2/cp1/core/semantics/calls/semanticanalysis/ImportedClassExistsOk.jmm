@@ -1,6 +1,0 @@
-package pt.up.fe.comp.cp1.core.semantics.calls.semanticanalysis;
-
-import java.util.Date;
-
-class ImportedClassExistsOk {
-}

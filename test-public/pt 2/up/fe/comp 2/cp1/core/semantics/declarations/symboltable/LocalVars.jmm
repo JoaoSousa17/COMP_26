@@ -1,8 +1,0 @@
-package pt.up.fe.comp.cp1.core.semantics.declarations.symboltable;
-
-class LocalVars {
-    public int sum(int a) {
-        int local;
-        return 0;
-    }
-}

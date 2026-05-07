@@ -1,5 +1,0 @@
-package pt.up.fe.comp.cp1.core.semantics.declarations.semanticanalysis;
-
-class ClassWithSameNameAsExtends extends ClassWithSameNameAsExtends {
-
-}

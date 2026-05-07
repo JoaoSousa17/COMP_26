@@ -1,7 +1,0 @@
-package pt.up.fe.comp.cp1.core.semantics.declarations.symboltable;
-
-import examples.Quicksort;
-
-class Super extends Quicksort {
-
-}

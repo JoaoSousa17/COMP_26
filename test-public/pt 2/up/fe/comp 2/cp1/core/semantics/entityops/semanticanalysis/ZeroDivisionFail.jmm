@@ -1,7 +1,0 @@
-package pt.up.fe.comp.cp1.core.semantics.entityops.semanticanalysis;
-
-class ZeroDivisionFail {
-    int divide(int n) {
-        return n / 0;
-    }
-}
