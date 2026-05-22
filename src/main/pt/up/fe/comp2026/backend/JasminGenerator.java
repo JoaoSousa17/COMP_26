@@ -15,8 +15,6 @@ import java.util.stream.Collectors;
 
 /**
  * Generates Jasmin code from an OllirResult.
- * <p>
- * One JasminGenerator instance per OllirResult.
  */
 public class JasminGenerator {
 
@@ -39,7 +37,7 @@ public class JasminGenerator {
     OptUtils utils;
     private final FunctionClassMap<TreeNode, String> generators;
     private final JasminAssignEmitter assignEmitter = new JasminAssignEmitter(this);
-    private final JasminCallEmitter callEmitter = new JasminCallEmitter(this);
+    final JasminCallEmitter callEmitter = new JasminCallEmitter(this);
     private final JasminExpressionEmitter exprEmitter = new JasminExpressionEmitter(this);
 
     public JasminGenerator(OllirResult ollirResult) {
@@ -59,6 +57,7 @@ public class JasminGenerator {
         generators.put(SingleOpInstruction.class, exprEmitter::singleOp);
         generators.put(LiteralElement.class, exprEmitter::literal);
         generators.put(Operand.class, exprEmitter::operand);
+        generators.put(ArrayOperand.class, exprEmitter::arrayOperand);
         generators.put(BinaryOpInstruction.class, exprEmitter::binaryOp);
         generators.put(ReturnInstruction.class, this::generateReturn);
         generators.put(GotoInstruction.class, this::generateGoto);
@@ -72,7 +71,6 @@ public class JasminGenerator {
         generators.put(InvokeSpecialInstruction.class, callEmitter::invokeSpecial);
     }
 
-
     String apply(TreeNode node) {
         return generators.apply(node);
     }
@@ -82,12 +80,9 @@ public class JasminGenerator {
     }
 
     public String build() {
-
-        // This way, build is idempotent
         if (code == null) {
             code = apply(ollirResult.getOllirClass());
         }
-
         return code;
     }
 
@@ -98,7 +93,7 @@ public class JasminGenerator {
         code.append(".class public ").append(nameWithPackage).append(NL).append(NL);
 
         String superClassName = classUnit.getSuperClass();
-        String fullSuperClass =  (superClassName == null || superClassName.equals("Object"))
+        String fullSuperClass = (superClassName == null || superClassName.equals("Object"))
                 ? "java/lang/Object"
                 : types.resolveClassName(superClassName);
 
@@ -108,7 +103,6 @@ public class JasminGenerator {
             code.append(generateField(field));
         }
 
-        // generate a single constructor method
         var defaultConstructor = """
                 ;default constructor
                 .method public <init>()V
@@ -120,10 +114,7 @@ public class JasminGenerator {
         code.append(defaultConstructor);
 
         for (var method : ollirResult.getOllirClass().getMethods()) {
-            if (method.isConstructMethod()) {
-                continue;
-            }
-
+            if (method.isConstructMethod()) continue;
             code.append(apply(method));
         }
 
@@ -134,8 +125,8 @@ public class JasminGenerator {
         var modifier = types.getModifier(field.getFieldAccessModifier());
         var staticMod = field.isStaticField() ? "static " : "";
         var name = field.getFieldName();
-        var desciptor = types.getTypeDescriptor(field.getFieldType());
-        return ".field " + modifier + staticMod + "'" + name + "'" + " " + desciptor + NL;
+        var descriptor = types.getTypeDescriptor(field.getFieldType());
+        return ".field " + modifier + staticMod + "'" + name + "'" + " " + descriptor + NL;
     }
 
     private String generateMethod(Method method) {
@@ -146,9 +137,7 @@ public class JasminGenerator {
         var code = new StringBuilder();
 
         var modifier = types.getModifier(method.getMethodAccessModifier());
-
         var staticMod = method.isStaticMethod() ? "static " : "";
-
         var methodName = method.getMethodName();
 
         var params = method.getParams().stream()
@@ -160,7 +149,6 @@ public class JasminGenerator {
         code.append("\n.method ").append(modifier)
                 .append(staticMod)
                 .append(methodName).append("(").append(params).append(")").append(returnType).append(NL);
-
 
         var bodyCode = new StringBuilder();
         for (var inst : method.getInstructions()) {
@@ -177,7 +165,6 @@ public class JasminGenerator {
             }
         }
 
-        // Add limits
         int maxReg = method.getVarTable().values().stream()
                 .mapToInt(Descriptor::getVirtualReg)
                 .max()
@@ -186,20 +173,16 @@ public class JasminGenerator {
 
         code.append(TAB).append(".limit stack ").append(stack.getMax()).append(NL);
         code.append(TAB).append(".limit locals ").append(limitLocals).append(NL);
-
         code.append(TAB).append(bodyCode);
-
         code.append(".end method\n");
+
         currentMethod = null;
         return code.toString();
     }
 
     private String generateReturn(ReturnInstruction returnInst) {
         var code = new StringBuilder();
-
-        var returnType = returnInst.getReturnType();
-
-        var typePrefix = types.getTypePrefix(returnType);
+        var typePrefix = types.getTypePrefix(returnInst.getReturnType());
 
         returnInst.getOperand().ifPresent(op -> {
             code.append(apply(op));
@@ -207,7 +190,6 @@ public class JasminGenerator {
         });
 
         code.append(typePrefix).append("return").append(NL);
-
         return code.toString();
     }
 
@@ -237,5 +219,4 @@ public class JasminGenerator {
 
         return code.toString();
     }
-
 }

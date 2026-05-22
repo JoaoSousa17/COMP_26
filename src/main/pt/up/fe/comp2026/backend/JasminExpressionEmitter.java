@@ -6,7 +6,10 @@ import pt.up.fe.specs.util.exceptions.NotImplementedException;
 
 import static org.specs.comp.ollir.OperationType.*;
 
-/** Generates code for expressions: operand loads, literals, arithmetic, comparisons, and logical NOT. */
+/**
+ * Generates code for expressions: operand loads, literals, arithmetic,
+ * comparisons, logical NOT, and array operand loads.
+ */
 class JasminExpressionEmitter {
 
     private static final String NL = "\n";
@@ -35,8 +38,20 @@ class JasminExpressionEmitter {
         return "ldc " + literalStr + NL;
     }
 
+    /** Load a regular (non-array-element) operand onto the stack. */
     String operand(Operand operand) {
         var reg = gen.currentMethod.getVarTable().get(operand.getName());
+        gen.stack.update(+1);
+        return gen.types.getLoad(reg) + NL;
+    }
+
+    /**
+     * Load an ArrayOperand as a plain reference (e.g., passing an array variable
+     * as an argument to a method). We just load the array reference, not an element.
+     * Element access (arr[i]) is handled by JasminAssignEmitter.
+     */
+    String arrayOperand(ArrayOperand arrayOperand) {
+        var reg = gen.currentMethod.getVarTable().get(arrayOperand.getName());
         gen.stack.update(+1);
         return gen.types.getLoad(reg) + NL;
     }
@@ -77,7 +92,6 @@ class JasminExpressionEmitter {
     /**
      * Emits operand loads and a conditional branch to {@code trueLabel}.
      * Optimizes to single-operand branch instructions when one side is the literal 0.
-     * Package-private so JasminGenerator can call it from generateOpCond.
      */
     String emitComparisonBranch(BinaryOpInstruction binOp, String trueLabel) {
         var left = binOp.getLeftOperand();

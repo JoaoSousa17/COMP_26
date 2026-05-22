@@ -50,7 +50,11 @@ class JasminCallEmitter {
         return code.toString();
     }
 
-    String invokeStatic(InvokeStaticInstruction invoke) {
+    /**
+     * Generates invokestatic. When {@code forAssign} is true, the return value is left on
+     * the stack for the caller (AssignEmitter) to store — the isolated pop is suppressed.
+     */
+    String invokeStatic(InvokeStaticInstruction invoke, boolean forAssign) {
         var code = new StringBuilder();
 
         for (var arg : invoke.getArguments()) code.append(gen.apply(arg));
@@ -60,8 +64,8 @@ class JasminCallEmitter {
         code.append("invokestatic ").append(buildMethodRef(className, invoke)).append(NL);
 
         if (!isVoidType(invoke.getReturnType())) {
-            if (invoke.isIsolated()) {
-                // Return value has no consumer — pop it to keep stack balanced.
+            if (!forAssign && invoke.isIsolated()) {
+                // Standalone call whose return value is discarded.
                 code.append("pop").append(NL);
                 gen.stack.update(-1);
             } else {
@@ -72,7 +76,16 @@ class JasminCallEmitter {
         return code.toString();
     }
 
-    String invokeVirtual(InvokeVirtualInstruction invoke) {
+    /** Convenience overload for standalone (non-assign) context. */
+    String invokeStatic(InvokeStaticInstruction invoke) {
+        return invokeStatic(invoke, false);
+    }
+
+    /**
+     * Generates invokevirtual. When {@code forAssign} is true, the return value is left on
+     * the stack for the caller (AssignEmitter) to store — the isolated pop is suppressed.
+     */
+    String invokeVirtual(InvokeVirtualInstruction invoke, boolean forAssign) {
         var code = new StringBuilder();
 
         code.append(gen.apply(invoke.getCaller()));
@@ -83,7 +96,8 @@ class JasminCallEmitter {
         code.append("invokevirtual ").append(buildMethodRef(className, invoke)).append(NL);
 
         if (!isVoidType(invoke.getReturnType())) {
-            if (invoke.isIsolated()) {
+            if (!forAssign && invoke.isIsolated()) {
+                // Standalone call whose return value is discarded.
                 code.append("pop").append(NL);
                 gen.stack.update(-1);
             } else {
@@ -92,6 +106,11 @@ class JasminCallEmitter {
         }
 
         return code.toString();
+    }
+
+    /** Convenience overload for standalone (non-assign) context. */
+    String invokeVirtual(InvokeVirtualInstruction invoke) {
+        return invokeVirtual(invoke, false);
     }
 
     String invokeSpecial(InvokeSpecialInstruction invoke) {
@@ -127,11 +146,66 @@ class JasminCallEmitter {
 
     private String buildMethodRef(String classname, CallInstruction invoke) {
         var methodName = getMethodName(invoke);
-        var params = invoke.getArguments().stream()
+        var ret = gen.types.getTypeDescriptor(invoke.getReturnType());
+
+        // Try to resolve parameter descriptors from the actual JVM method signature via reflection.
+        // This is necessary when an argument's OLLIR type is a subtype of the declared parameter type
+        // (e.g., passing 'this' of type Foo where the method expects Auxi or Object).
+        // Using the OLLIR argument type would produce a wrong descriptor and a NoSuchMethodError.
+        String params = resolveParamDescriptors(classname, methodName, invoke);
+
+        return classname + "/" + methodName + "(" + params + ")" + ret;
+    }
+
+    /**
+     * Resolves parameter type descriptors for the given method, preferring the actual JVM
+     * method signature over OLLIR argument types. Falls back to OLLIR types if reflection fails.
+     */
+    private String resolveParamDescriptors(String classpath, String methodName, CallInstruction invoke) {
+        var args = invoke.getArguments();
+        if (args.isEmpty()) return "";
+
+        // Convert JVM path format to class name for Class.forName
+        String fqn = classpath.replace('/', '.');
+        try {
+            Class<?> clazz = Class.forName(fqn);
+            int argCount = args.size();
+
+            // Find a method with matching name and arg count
+            var candidates = java.util.Arrays.stream(clazz.getMethods())
+                    .filter(m -> m.getName().equals(methodName) && m.getParameterCount() == argCount)
+                    .toList();
+
+            if (candidates.size() == 1) {
+                // Unambiguous match — use its parameter descriptors
+                return java.util.Arrays.stream(candidates.get(0).getParameterTypes())
+                        .map(this::javaClassToDescriptor)
+                        .collect(Collectors.joining());
+            }
+            // Multiple overloads or no match: fall through to OLLIR types
+        } catch (ClassNotFoundException ignored) {
+            // Class not on classpath (e.g. user-defined class) — use OLLIR types
+        }
+
+        // Default: use OLLIR argument types
+        return args.stream()
                 .map(arg -> gen.types.getTypeDescriptor(arg.getType()))
                 .collect(Collectors.joining());
-        var ret = gen.types.getTypeDescriptor(invoke.getReturnType());
-        return classname + "/" + methodName + "(" + params + ")" + ret;
+    }
+
+    /** Converts a Java reflection Class to a JVM type descriptor string. */
+    private String javaClassToDescriptor(Class<?> clazz) {
+        if (clazz == void.class)    return "V";
+        if (clazz == int.class)     return "I";
+        if (clazz == boolean.class) return "Z";
+        if (clazz == long.class)    return "J";
+        if (clazz == double.class)  return "D";
+        if (clazz == float.class)   return "F";
+        if (clazz == byte.class)    return "B";
+        if (clazz == short.class)   return "S";
+        if (clazz == char.class)    return "C";
+        if (clazz.isArray()) return "[" + javaClassToDescriptor(clazz.getComponentType());
+        return "L" + clazz.getName().replace('.', '/') + ";";
     }
 
     private String getMethodName(CallInstruction invoke) {
