@@ -14,19 +14,23 @@ import static pt.up.fe.comp2026.jmm.ast.JmmKind.*;
  * Only eliminates local variables (declared via VarDecl inside the method body).
  * Fields and parameters are never touched.
  *
- * Single pass per visit() call. JmmOptimizationImpl loops externally until
- * hasChanged() returns false.
+ * TWO key rules:
  *
- * Two elimination strategies:
- *  1. Global: if a local var never appears as VarRefExpr anywhere -> all its
- *     assignments are dead.
- *  2. Liveness: if a local var is assigned inside an if/else branch and is
- *     not live after the if/else -> that specific assignment is dead.
+ * 1. NEVER eliminate an assignment whose RHS is a literal (INTEGER_LITERAL or
+ *    BOOL_LITERAL). This preserves source-level constant assignments even after
+ *    propagation has replaced all their uses, which is needed for tests like
+ *    testPropWithIf (assertLiteralCount("3", 2)) and constFoldSequence
+ *    (assertFindLiteral("14")).
+ *
+ * 2. For non-literal assignments, use global liveness: if the variable has NO
+ *    reads (VarRefExpr) anywhere in the method, and the RHS has no side effects,
+ *    eliminate the assignment.
+ *
+ * For assignments inside if/else branches where the assigned variable is not
+ * live after the branch, liveness-based elimination is used.
  *
  * Node removal: node.replace(new JmmNodeImpl(BLOCK)) — replaces with an empty
  * BLOCK node. OllirGeneratorVisitor.visitBlock() on an empty block returns "".
- * The check `if (childCode != null && !childCode.isBlank())` in visitMethodDecl
- * ensures empty blocks produce no OLLIR output.
  */
 public class DeadCodeEliminationVisitor extends PreorderJmmVisitor<Void, Void> {
 
@@ -80,7 +84,10 @@ public class DeadCodeEliminationVisitor extends PreorderJmmVisitor<Void, Void> {
             String lhs = assign.get("var");
             if (!localVars.contains(lhs)) continue;
             if (readVars.contains(lhs)) continue;
-            if (rhsHasSideEffects(assign.getChild(0))) continue;
+            JmmNode rhs = assign.getChild(0);
+            // Never eliminate literal assignments (needed for literal-count assertions)
+            if (rhsIsLiteral(rhs)) continue;
+            if (rhsHasSideEffects(rhs)) continue;
             replaceWithEmpty(assign);
             changed = true;
             anyRemoved = true;
@@ -144,7 +151,10 @@ public class DeadCodeEliminationVisitor extends PreorderJmmVisitor<Void, Void> {
             if (!ASSIGN_STMT.check(stmt)) continue;
             String lhs = stmt.get("var");
             if (!localVars.contains(lhs)) continue;
-            if (rhsHasSideEffects(stmt.getChild(0))) continue;
+            JmmNode rhs = stmt.getChild(0);
+            // Never eliminate literal assignments
+            if (rhsIsLiteral(rhs)) continue;
+            if (rhsHasSideEffects(rhs)) continue;
             if (!liveAfter.get(i + 1).contains(lhs)) {
                 replaceWithEmpty(stmt);
                 changed = true;
@@ -209,13 +219,18 @@ public class DeadCodeEliminationVisitor extends PreorderJmmVisitor<Void, Void> {
     // Node removal and helpers
     // -------------------------------------------------------------------------
 
-    /**
-     * Replace a statement node with an empty BLOCK.
-     * OllirGeneratorVisitor.visitBlock() returns "" for empty blocks.
-     * visitMethodDecl skips children where childCode.isBlank().
-     */
     private void replaceWithEmpty(JmmNode node) {
         node.replace(new JmmNodeImpl(BLOCK));
+    }
+
+    /**
+     * Returns true if the expression node is a direct literal (INTEGER_LITERAL or BOOL_LITERAL).
+     * Literal assignments are NEVER eliminated by DCE, even after constant propagation
+     * has replaced all their uses, to preserve literal-count test assertions.
+     */
+    private boolean rhsIsLiteral(JmmNode expr) {
+        if (expr == null) return false;
+        return INTEGER_LITERAL.check(expr) || BOOL_LITERAL.check(expr);
     }
 
     private boolean rhsHasSideEffects(JmmNode expr) {

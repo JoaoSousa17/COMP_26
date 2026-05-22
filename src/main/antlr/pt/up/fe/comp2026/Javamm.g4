@@ -131,17 +131,10 @@ expr
     | op='+' expr                                              #PlusExpr
     | op='-' expr                                              #MinusExpr
     | op='!' expr                                              #UnaryExpr
-    | expr op='*' expr                                         #BinaryExpr
-    | expr op='/' expr                                         #BinaryExpr
-    | expr op='%' expr                                         #BinaryExpr
-    | expr op='+' expr                                         #BinaryExpr
-    | expr op='-' expr                                         #BinaryExpr
-    | expr op='<' expr                                         #BinaryExpr
-    | expr op='>' expr                                         #BinaryExpr
-    | expr op='<=' expr                                        #BinaryExpr
-    | expr op='>=' expr                                        #BinaryExpr
-    | expr op='==' expr                                        #BinaryExpr
-    | expr op='!=' expr                                        #BinaryExpr
+    | expr op=('*' | '/' | '%') expr                           #BinaryExpr
+    | expr op=('+' | '-') expr                                 #BinaryExpr
+    | expr op=('<' | '>' | '<=' | '>=') expr                  #BinaryExpr
+    | expr op=('==' | '!=') expr                              #BinaryExpr
     | expr op='&&' expr                                        #BinaryExpr
     | expr op='||' expr                                        #BinaryExpr
     | value=INTEGER                                            #IntegerLiteral

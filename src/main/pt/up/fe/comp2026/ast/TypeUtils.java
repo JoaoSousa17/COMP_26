@@ -185,24 +185,35 @@ public class TypeUtils {
         JmmNode receiver = expr.getChild(0);
         JmmType objType = getExprType(receiver, currentMethod);
 
-        // Static call: receiver is an imported class name (VAR_REF_EXPR with null type)
-        if (objType == null && VAR_REF_EXPR.check(receiver)) {
+        // Static call: receiver is a class name (VAR_REF_EXPR with null type or class name)
+        if (VAR_REF_EXPR.check(receiver)) {
             String className = receiver.get("name");
-            String fqn = table.getImportedFullyQualifiedName(className).orElse(className);
-            var st = resolveSymbolTable(fqn);
-            if (st.isPresent()) {
-                var methods = st.get().getMethods(methodName);
+
+            // Check if it's the current class (static call on own class)
+            if (className.equals(table.getClassName()) ||
+                    typeNamesMatch(className, table.getFullyQualifiedName())) {
+                var methods = table.getMethods(methodName);
                 if (!methods.isEmpty()) return methods.get(0).returnType();
             }
-            try {
-                Class<?> clazz = Class.forName(fqn);
-                return Arrays.stream(clazz.getMethods())
-                        .filter(m -> m.getName().equals(methodName))
-                        .findFirst()
-                        .map(m -> javaClassToJmmType(m.getReturnType()))
-                        .orElse(null);
-            } catch (ClassNotFoundException ignored) {}
-            return null;
+
+            // If objType is null, it's a static call on an imported class
+            if (objType == null) {
+                String fqn = table.getImportedFullyQualifiedName(className).orElse(className);
+                var st = resolveSymbolTable(fqn);
+                if (st.isPresent()) {
+                    var methods = st.get().getMethods(methodName);
+                    if (!methods.isEmpty()) return methods.get(0).returnType();
+                }
+                try {
+                    Class<?> clazz = Class.forName(fqn);
+                    return Arrays.stream(clazz.getMethods())
+                            .filter(m -> m.getName().equals(methodName))
+                            .findFirst()
+                            .map(m -> javaClassToJmmType(m.getReturnType()))
+                            .orElse(null);
+                } catch (ClassNotFoundException ignored) {}
+                return null;
+            }
         }
 
         if (!(objType instanceof JmmClassType classType)) return null;

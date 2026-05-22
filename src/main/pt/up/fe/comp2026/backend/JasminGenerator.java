@@ -3,20 +3,14 @@ package pt.up.fe.comp2026.backend;
 import org.specs.comp.ollir.*;
 import org.specs.comp.ollir.inst.*;
 import org.specs.comp.ollir.tree.TreeNode;
-import org.specs.comp.ollir.type.ArrayType;
-import org.specs.comp.ollir.type.BuiltinKind;
-import org.specs.comp.ollir.type.BuiltinType;
 import pt.up.fe.comp.jmm.ollir.OllirResult;
 import pt.up.fe.comp.jmm.report.Report;
 import pt.up.fe.comp2026.optimization.OptUtils;
-import pt.up.fe.specs.util.SpecsCheck;
 import pt.up.fe.specs.util.classmap.FunctionClassMap;
-import pt.up.fe.specs.util.exceptions.NotImplementedException;
 import pt.up.fe.specs.util.utilities.StringLines;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 /**
@@ -29,19 +23,24 @@ public class JasminGenerator {
     private static final String NL = "\n";
     private static final String TAB = "   ";
 
-    private final OllirResult ollirResult;
+    final OllirResult ollirResult;
 
-    private List<Report> reports;
+    private final List<Report> reports;
 
     private String code;
 
-    private Method currentMethod;
+    Method currentMethod;
 
-    boolean isInsideAssignment;
+    final StackTracker stack = new StackTracker();
 
-    private final JasminUtils types;
-    private OptUtils utils;
+    String pendingNewStore;
+
+    final JasminUtils types;
+    OptUtils utils;
     private final FunctionClassMap<TreeNode, String> generators;
+    private final JasminAssignEmitter assignEmitter = new JasminAssignEmitter(this);
+    private final JasminCallEmitter callEmitter = new JasminCallEmitter(this);
+    private final JasminExpressionEmitter exprEmitter = new JasminExpressionEmitter(this);
 
     public JasminGenerator(OllirResult ollirResult) {
         this.ollirResult = ollirResult;
@@ -49,32 +48,33 @@ public class JasminGenerator {
         reports = new ArrayList<>();
         code = null;
         currentMethod = null;
-        isInsideAssignment = false;
+        pendingNewStore = null;
 
         types = new JasminUtils(ollirResult);
-        // Initialize everytime we start a method
         utils = null;
         this.generators = new FunctionClassMap<>();
         generators.put(ClassUnit.class, this::generateClassUnit);
         generators.put(Method.class, this::generateMethod);
-        generators.put(AssignInstruction.class, this::generateAssign);
-        generators.put(SingleOpInstruction.class, this::generateSingleOp);
-        generators.put(LiteralElement.class, this::generateLiteral);
-        generators.put(Operand.class, this::generateOperand);
-        generators.put(BinaryOpInstruction.class, this::generateBinaryOp);
+        generators.put(AssignInstruction.class, assignEmitter::generate);
+        generators.put(SingleOpInstruction.class, exprEmitter::singleOp);
+        generators.put(LiteralElement.class, exprEmitter::literal);
+        generators.put(Operand.class, exprEmitter::operand);
+        generators.put(BinaryOpInstruction.class, exprEmitter::binaryOp);
         generators.put(ReturnInstruction.class, this::generateReturn);
+        generators.put(GotoInstruction.class, this::generateGoto);
+        generators.put(OpCondInstruction.class, this::generateOpCond);
+        generators.put(SingleOpCondInstruction.class, this::generateSingleOpCond);
+        generators.put(UnaryOpInstruction.class, exprEmitter::unaryOp);
+        generators.put(GetFieldInstruction.class, callEmitter::getField);
+        generators.put(PutFieldInstruction.class, callEmitter::putField);
+        generators.put(InvokeStaticInstruction.class, callEmitter::invokeStatic);
+        generators.put(InvokeVirtualInstruction.class, callEmitter::invokeVirtual);
+        generators.put(InvokeSpecialInstruction.class, callEmitter::invokeSpecial);
     }
 
 
-    private String apply(TreeNode node) {
-        var code = new StringBuilder();
-
-        // Print the corresponding OLLIR code as a comment
-        //code.append("; ").append(node).append(NL);
-
-        code.append(generators.apply(node));
-
-        return code.toString();
+    String apply(TreeNode node) {
+        return generators.apply(node);
     }
 
     public List<Report> getReports() {
@@ -91,19 +91,22 @@ public class JasminGenerator {
         return code;
     }
 
-
     private String generateClassUnit(ClassUnit classUnit) {
-
         var code = new StringBuilder();
 
-        // generate class name
         var nameWithPackage = ollirResult.getOllirClass().getClassFullyQualifiedName().replace('.', '/');
-        code.append(".class ").append(nameWithPackage).append(NL).append(NL);
+        code.append(".class public ").append(nameWithPackage).append(NL).append(NL);
 
-        // TODO: When you support 'extends', this must be updated
-        var fullSuperClass =  "java/lang/Object";
+        String superClassName = classUnit.getSuperClass();
+        String fullSuperClass =  (superClassName == null || superClassName.equals("Object"))
+                ? "java/lang/Object"
+                : types.resolveClassName(superClassName);
 
         code.append(".super ").append(fullSuperClass).append(NL);
+
+        for (var field : classUnit.getFields()) {
+            code.append(generateField(field));
+        }
 
         // generate a single constructor method
         var defaultConstructor = """
@@ -116,12 +119,7 @@ public class JasminGenerator {
                 """.formatted(fullSuperClass);
         code.append(defaultConstructor);
 
-        // generate code for all other methods
         for (var method : ollirResult.getOllirClass().getMethods()) {
-
-            // Ignore constructor, since there is always one constructor
-            // that receives no arguments, and has been already added
-            // previously
             if (method.isConstructMethod()) {
                 continue;
             }
@@ -132,19 +130,22 @@ public class JasminGenerator {
         return code.toString();
     }
 
-    private String generateMethod(Method method) {
-        //System.out.println("STARTING METHOD " + method.getMethodName());
-        // set method
-        currentMethod = method;
+    private String generateField(Field field) {
+        var modifier = types.getModifier(field.getFieldAccessModifier());
+        var staticMod = field.isStaticField() ? "static " : "";
+        var name = field.getFieldName();
+        var desciptor = types.getTypeDescriptor(field.getFieldType());
+        return ".field " + modifier + staticMod + "'" + name + "'" + " " + desciptor + NL;
+    }
 
-        // Initialize utils, to have fresh labels
+    private String generateMethod(Method method) {
+        currentMethod = method;
+        stack.reset();
         utils = new OptUtils(null);
 
         var code = new StringBuilder();
 
-        // TODO: Modifier is hard-coded
-        var modifier = types.getModifier(AccessModifier.PUBLIC);
-
+        var modifier = types.getModifier(method.getMethodAccessModifier());
 
         var staticMod = method.isStaticMethod() ? "static " : "";
 
@@ -158,97 +159,38 @@ public class JasminGenerator {
 
         code.append("\n.method ").append(modifier)
                 .append(staticMod)
-                .append(methodName)
-                .append("(" + params + ")" + returnType).append(NL);
+                .append(methodName).append("(").append(params).append(")").append(returnType).append(NL);
 
 
         var bodyCode = new StringBuilder();
         for (var inst : method.getInstructions()) {
-            var instCode = StringLines.getLines(apply(inst)).stream()
-                    .collect(Collectors.joining(NL + TAB, TAB, NL));
-
-            bodyCode.append(instCode);
+            for (var label : currentMethod.getLabels(inst)) {
+                bodyCode.append(label).append(":").append(NL);
+            }
+            for (var line : StringLines.getLines(apply(inst))) {
+                if (line.isBlank()) continue;
+                if (line.endsWith(":")) {
+                    bodyCode.append(line).append(NL);
+                } else {
+                    bodyCode.append(TAB).append(line).append(NL);
+                }
+            }
         }
 
         // Add limits
-        code.append(TAB).append(".limit stack 99").append(NL);
-        code.append(TAB).append(".limit locals 99").append(NL);
+        int maxReg = method.getVarTable().values().stream()
+                .mapToInt(Descriptor::getVirtualReg)
+                .max()
+                .orElse(method.isStaticMethod() ? -1 : 0);
+        int limitLocals = maxReg + 1;
+
+        code.append(TAB).append(".limit stack ").append(stack.getMax()).append(NL);
+        code.append(TAB).append(".limit locals ").append(limitLocals).append(NL);
 
         code.append(TAB).append(bodyCode);
 
         code.append(".end method\n");
-        //System.out.println("METHOD:\n" + code);
-        // unset method
         currentMethod = null;
-        //System.out.println("ENDING METHOD " + method.getMethodName());
-        return code.toString();
-    }
-
-    private String generateAssign(AssignInstruction assign) {
-        try {
-            isInsideAssignment = true;
-
-
-            var code = new StringBuilder();
-
-            // store value in the stack in destination
-            var lhs = assign.getDest();
-
-            // generate code for loading what's on the right
-            code.append(apply(assign.getRhs()));
-
-
-            // Assume Operand
-            var operand = (Operand) lhs;
-
-
-            // get register
-            var reg = currentMethod.getVarTable().get(operand.getName());
-
-            code.append(types.getStore(reg)).append(NL);
-
-            return code.toString();
-        } finally {
-            isInsideAssignment = false;
-        }
-    }
-
-    private String generateSingleOp(SingleOpInstruction singleOp) {
-        return apply(singleOp.getSingleOperand());
-    }
-
-    private String generateLiteral(LiteralElement literal) {
-        return "ldc " + literal.getLiteral() + NL;
-    }
-
-    private String generateOperand(Operand operand) {
-        // get register
-        var reg = currentMethod.getVarTable().get(operand.getName());
-
-        return types.getLoad(reg) + NL;
-    }
-
-
-    private String generateBinaryOp(BinaryOpInstruction binaryOp) {
-
-        var code = new StringBuilder();
-
-        // load values on the left and on the right
-        code.append(apply(binaryOp.getLeftOperand()));
-        code.append(apply(binaryOp.getRightOperand()));
-
-
-        var typePrefix = types.getTypePrefix(binaryOp.getOperation().getTypeInfo());
-
-        // apply operation
-        var op = switch (binaryOp.getOperation().getOpType()) {
-            case ADD -> "add";
-            case MUL -> "mul";
-            default -> throw new NotImplementedException(binaryOp.getOperation().getOpType());
-        };
-
-        code.append(typePrefix + op).append(NL);
-
         return code.toString();
     }
 
@@ -259,10 +201,39 @@ public class JasminGenerator {
 
         var typePrefix = types.getTypePrefix(returnType);
 
-        // Load operand into the stack, if present
-        returnInst.getOperand().ifPresent(op -> code.append(apply(op)));
+        returnInst.getOperand().ifPresent(op -> {
+            code.append(apply(op));
+            stack.update(-1);
+        });
 
         code.append(typePrefix).append("return").append(NL);
+
+        return code.toString();
+    }
+
+    private String generateGoto(GotoInstruction gotoInst) {
+        return "goto " + gotoInst.getLabel() + NL;
+    }
+
+    private String generateSingleOpCond(SingleOpCondInstruction condInst) {
+        var code = new StringBuilder();
+        code.append(apply(condInst.getCondition().getSingleOperand()));
+        stack.update(-1);
+        code.append("ifne ").append(condInst.getLabel()).append(NL);
+        return code.toString();
+    }
+
+    private String generateOpCond(OpCondInstruction condInst) {
+        var code = new StringBuilder();
+        var condition = condInst.getCondition();
+
+        if (condition instanceof BinaryOpInstruction binOp) {
+            code.append(exprEmitter.emitComparisonBranch(binOp, condInst.getLabel()));
+        } else if (condition instanceof UnaryOpInstruction unaryOp) {
+            code.append(apply(unaryOp.getOperand()));
+            stack.update(-1);
+            code.append("ifeq ").append(condInst.getLabel()).append(NL);
+        }
 
         return code.toString();
     }

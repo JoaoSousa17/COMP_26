@@ -59,52 +59,102 @@ public class InstantiationValidationPass extends AnalysisVisitorWithTable {
 
         // --- 2. For the current class, check via symbol table ---
         if (isCurrentClass) {
-            String fqn = this.table.getImportedFullyQualifiedName(className).orElse(className);
-            var stOpt = this.table.getImportedSymbolTable(fqn);
-            if (stOpt.isEmpty()) stOpt = this.table.getImportedSymbolTable(className);
-            if (stOpt.isEmpty()) stOpt = this.table.getImplicitImport(className);
+            // The current class itself does not define constructors explicitly in our grammar.
+            // However, the symbol table might have <init> methods if extended.
+            // For the current class, we check if it has any non-default constructors
+            // by looking at symbol table for <init> methods.
+            // If no <init> is found, the class only has the default no-arg constructor.
 
-            if (stOpt.isPresent()) {
-                var st = stOpt.get();
-                var allConstructors = st.getMethods("<init>");
+            // Check all methods named <init> in the current class's symbol table
+            var allConstructors = this.table.getMethods("<init>");
 
-                if (!allConstructors.isEmpty()) {
-                    var matching = allConstructors.stream()
-                            .filter(m -> m.parameters().size() == argNodes.size())
-                            .toList();
+            if (!allConstructors.isEmpty()) {
+                // There are explicit constructors - check arg count
+                var matching = allConstructors.stream()
+                        .filter(m -> m.parameters().size() == argNodes.size())
+                        .toList();
 
-                    if (matching.isEmpty()) {
-                        int expected = allConstructors.get(0).parameters().size();
-                        addReport(newError(newExpr,
-                                "No constructor found in '" + className + "' that accepts "
-                                        + argNodes.size() + " argument(s), expected " + expected));
-                        return null;
+                if (matching.isEmpty()) {
+                    int expected = allConstructors.get(0).parameters().size();
+                    addReport(newError(newExpr,
+                            "No constructor found in '" + className + "' that accepts "
+                                    + argNodes.size() + " argument(s), expected " + expected));
+                    return null;
+                }
+
+                // Check arg types against symbol table
+                var constructor = matching.get(0);
+                var params = constructor.parameters();
+                for (int i = 0; i < params.size(); i++) {
+                    var expected = params.get(i).type();
+                    var actual = types.getExprType(argNodes.get(i), currentMethod);
+                    if (actual == null) continue;
+                    if (!types.isTypeCompatible(expected, actual)) {
+                        addReport(newError(argNodes.get(i),
+                                "Constructor argument " + (i + 1) + " of '" + className
+                                        + "': expected '" + expected + "', got '" + actual + "'"));
                     }
+                }
+            } else {
+                // No explicit constructors found → only default no-arg constructor
+                // If arguments are provided, it's an error
+                if (!argNodes.isEmpty()) {
+                    addReport(newError(newExpr,
+                            "Class '" + className + "' has no constructor that accepts "
+                                    + argNodes.size() + " argument(s)"));
+                    return null;
+                }
+            }
+            return null;
+        }
 
-                    // Check arg types against symbol table
-                    var constructor = matching.get(0);
-                    var params = constructor.parameters();
-                    for (int i = 0; i < params.size(); i++) {
-                        var expected = params.get(i).type();
-                        var actual = types.getExprType(argNodes.get(i), currentMethod);
-                        if (actual == null) continue;
-                        if (!types.isTypeCompatible(expected, actual)) {
-                            addReport(newError(argNodes.get(i),
-                                    "Constructor argument " + (i + 1) + " of '" + className
-                                            + "': expected '" + expected + "', got '" + actual + "'"));
-                        }
+        // --- 3. For imported classes, also check against symbol table first ---
+        String fqn = this.table.getImportedFullyQualifiedName(className).orElse(className);
+
+        // Try symbol table first
+        var stOpt = this.table.getImportedSymbolTable(fqn);
+        if (stOpt.isEmpty()) stOpt = this.table.getImportedSymbolTable(className);
+        if (stOpt.isEmpty()) stOpt = this.table.getImplicitImport(className);
+
+        if (stOpt.isPresent()) {
+            var st = stOpt.get();
+            var allConstructors = st.getMethods("<init>");
+
+            if (!allConstructors.isEmpty()) {
+                var matching = allConstructors.stream()
+                        .filter(m -> m.parameters().size() == argNodes.size())
+                        .toList();
+
+                if (matching.isEmpty()) {
+                    int expected = allConstructors.get(0).parameters().size();
+                    addReport(newError(newExpr,
+                            "No constructor found in '" + className + "' that accepts "
+                                    + argNodes.size() + " argument(s), expected " + expected));
+                    return null;
+                }
+
+                // Check arg types
+                var constructor = matching.get(0);
+                var params = constructor.parameters();
+                for (int i = 0; i < params.size(); i++) {
+                    var expected = params.get(i).type();
+                    var actual = types.getExprType(argNodes.get(i), currentMethod);
+                    if (actual == null) continue;
+                    if (!types.isTypeCompatible(expected, actual)) {
+                        addReport(newError(argNodes.get(i),
+                                "Constructor argument " + (i + 1) + " of '" + className
+                                        + "': expected '" + expected + "', got '" + actual + "'"));
                     }
                 }
             }
             return null;
         }
 
-        // --- 3. For imported classes, use reflection but only check arg COUNT ---
+        // --- 4. For imported classes not in symbol table, use reflection but only check arg COUNT ---
         // We skip per-argument type checking for imported/implicit classes because
         // our type system cannot model all Java type relationships (e.g. String vs char[],
         // autoboxing, widening conversions, etc.). If a constructor with the right
         // number of arguments exists, we accept the call conservatively.
-        String fqn = this.table.getImportedFullyQualifiedName(className).orElse(className);
         try {
             Class<?> clazz = Class.forName(fqn);
             var ctors = java.util.Arrays.stream(clazz.getConstructors())
@@ -131,24 +181,7 @@ public class InstantiationValidationPass extends AnalysisVisitorWithTable {
             // If ctors is non-empty (arg count matches at least one overload), accept without
             // further type checking — our type system is too coarse for exact Java type matching.
         } catch (ClassNotFoundException e) {
-            // Class not on classpath — try symbol table as fallback
-            var stOpt = this.table.getImportedSymbolTable(fqn);
-            if (stOpt.isEmpty()) stOpt = this.table.getImplicitImport(className);
-            if (stOpt.isEmpty()) return null; // Cannot resolve — skip conservatively
-
-            var st = stOpt.get();
-            var allConstructors = st.getMethods("<init>");
-            if (!allConstructors.isEmpty()) {
-                var matching = allConstructors.stream()
-                        .filter(m -> m.parameters().size() == argNodes.size())
-                        .toList();
-                if (matching.isEmpty()) {
-                    int expected = allConstructors.get(0).parameters().size();
-                    addReport(newError(newExpr,
-                            "No constructor found in '" + className + "' that accepts "
-                                    + argNodes.size() + " argument(s), expected " + expected));
-                }
-            }
+            // Class not on classpath — skip conservatively
         }
 
         return null;
