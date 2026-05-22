@@ -1,0 +1,12 @@
+package core.semantics.conditions;
+
+class WhileConditionBooleanFail {
+    int f(int value) {
+        int res;
+        res = 0;
+        while (value) {
+            res = res + 1;
+        }
+        return res;
+    }
+}
