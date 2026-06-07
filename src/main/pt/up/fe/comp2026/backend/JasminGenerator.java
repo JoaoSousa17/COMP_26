@@ -13,28 +13,21 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
-/**
- * Generates Jasmin code from an OllirResult.
- */
 public class JasminGenerator {
 
     private static final String NL = "\n";
     private static final String TAB = "   ";
 
     final OllirResult ollirResult;
-
     private final List<Report> reports;
-
     private String code;
 
     Method currentMethod;
-
     final StackTracker stack = new StackTracker();
-
     String pendingNewStore;
-
     final JasminUtils types;
     OptUtils utils;
+
     private final FunctionClassMap<TreeNode, String> generators;
     private final JasminAssignEmitter assignEmitter = new JasminAssignEmitter(this);
     final JasminCallEmitter callEmitter = new JasminCallEmitter(this);
@@ -42,12 +35,10 @@ public class JasminGenerator {
 
     public JasminGenerator(OllirResult ollirResult) {
         this.ollirResult = ollirResult;
-
         reports = new ArrayList<>();
         code = null;
         currentMethod = null;
         pendingNewStore = null;
-
         types = new JasminUtils(ollirResult);
         utils = null;
         this.generators = new FunctionClassMap<>();
@@ -69,6 +60,25 @@ public class JasminGenerator {
         generators.put(InvokeStaticInstruction.class, callEmitter::invokeStatic);
         generators.put(InvokeVirtualInstruction.class, callEmitter::invokeVirtual);
         generators.put(InvokeSpecialInstruction.class, callEmitter::invokeSpecial);
+    }
+
+    /**
+     * Looks up a variable descriptor by name, stripping surrounding quotes if present.
+     * OLLIR sometimes stores variable names with quotes (e.g. "$allowedNameI" or "ret"),
+     * but the var table uses the unquoted name as the key.
+     */
+    Descriptor getDescriptor(String name) {
+        // Try exact name first
+        var desc = currentMethod.getVarTable().get(name);
+        if (desc != null) return desc;
+        // Try stripping quotes
+        if (name.startsWith("\"") && name.endsWith("\"") && name.length() >= 2) {
+            desc = currentMethod.getVarTable().get(name.substring(1, name.length() - 1));
+            if (desc != null) return desc;
+        }
+        // Try adding quotes (less common)
+        desc = currentMethod.getVarTable().get("\"" + name + "\"");
+        return desc;
     }
 
     String apply(TreeNode node) {
@@ -103,18 +113,21 @@ public class JasminGenerator {
             code.append(generateField(field));
         }
 
-        var defaultConstructor = """
-                ;default constructor
-                .method public <init>()V
-                    aload_0
-                    invokespecial %s/<init>()V
-                    return
-                .end method
-                """.formatted(fullSuperClass);
-        code.append(defaultConstructor);
+        boolean hasOllirConstructor = classUnit.getMethods().stream()
+                .anyMatch(Method::isConstructMethod);
 
-        for (var method : ollirResult.getOllirClass().getMethods()) {
-            if (method.isConstructMethod()) continue;
+        if (!hasOllirConstructor) {
+            code.append("""
+                    ;default constructor
+                    .method public <init>()V
+                        aload_0
+                        invokespecial %s/<init>()V
+                        return
+                    .end method
+                    """.formatted(fullSuperClass));
+        }
+
+        for (var method : classUnit.getMethods()) {
             code.append(apply(method));
         }
 
@@ -138,7 +151,7 @@ public class JasminGenerator {
 
         var modifier = types.getModifier(method.getMethodAccessModifier());
         var staticMod = method.isStaticMethod() ? "static " : "";
-        var methodName = method.getMethodName();
+        var methodName = method.getMethodName().replace("\"", "");
 
         var params = method.getParams().stream()
                 .map(p -> types.getTypeDescriptor(p.getType()))
@@ -152,17 +165,25 @@ public class JasminGenerator {
 
         var bodyCode = new StringBuilder();
         for (var inst : method.getInstructions()) {
+            // Reset stack only at OLLIR-level labels (between complete statements, stack is 0)
             for (var label : currentMethod.getLabels(inst)) {
                 bodyCode.append(label).append(":").append(NL);
+                stack.resetCurrent();
             }
+
             for (var line : StringLines.getLines(apply(inst))) {
                 if (line.isBlank()) continue;
                 if (line.endsWith(":")) {
+                    // Inline label from comparison() — do NOT reset stack tracker
                     bodyCode.append(line).append(NL);
                 } else {
                     bodyCode.append(TAB).append(line).append(NL);
                 }
             }
+        }
+
+        if (method.isConstructMethod()) {
+            bodyCode.append(TAB).append("return").append(NL);
         }
 
         int maxReg = method.getVarTable().values().stream()

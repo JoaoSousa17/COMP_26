@@ -88,7 +88,7 @@ public class ArrayAccessPass extends AnalysisVisitorWithTable {
         if (valueType == null) return null;
 
         int remainingDims = arrType.dimension() - numIndices;
-        JmmType elementType = remainingDims <= 1
+        JmmType elementType = remainingDims <= 0
                 ? arrType.itemType()
                 : new JmmArrayType(arrType.itemType(), remainingDims);
 

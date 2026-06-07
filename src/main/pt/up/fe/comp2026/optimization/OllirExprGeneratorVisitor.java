@@ -11,6 +11,10 @@ import pt.up.fe.comp.jmm.ast.AJmmVisitor;
 import pt.up.fe.comp.jmm.ast.JmmNode;
 import pt.up.fe.comp2026.ast.TypeUtils;
 
+import java.util.Arrays;
+import java.util.List;
+import java.util.stream.Collectors;
+
 import static pt.up.fe.comp2026.jmm.ast.JmmKind.*;
 
 /**
@@ -268,11 +272,24 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
 
         boolean isStatic = isStaticCall(receiverNode);
 
+        List<String> paramFqns = getImportedMethodParamFqns(receiverNode, methodName, node.getNumChildren() - 1);
+
         StringBuilder argsCode = new StringBuilder();
         for (int i = 1; i < node.getNumChildren(); i++) {
-            var arg = visit(node.getChild(i));
+            var argNode = node.getChild(i);
+            var arg = visit(argNode);
             computation.append(arg.getComputation());
-            argsCode.append(", ").append(arg.getCode());
+            String argCode = arg.getCode();
+            if (paramFqns != null && i - 1 < paramFqns.size()) {
+                String paramFqn = paramFqns.get(i - 1);
+                if (paramFqn != null) {
+                    String argFqn = resolveClassTypeFqn(types.getExprType(argNode, currentMethod));
+                    if (!paramFqn.equals(argFqn)) {
+                        argCode = retypeArgCode(argCode, paramFqn);
+                    }
+                }
+            }
+            argsCode.append(", ").append(argCode);
         }
 
         JmmType retType = types.getExprType(node, currentMethod);
@@ -493,6 +510,53 @@ public class OllirExprGeneratorVisitor extends AJmmVisitor<Void, OllirExprResult
             if (currentMethod.getLocalVariable(name).isPresent()) return false;
         }
         return table.getField(name).isPresent();
+    }
+
+    /**
+     * For calls on imported classes, returns the FQN of each parameter type so that
+     * argument operands can be retyped to match the declared parameter (not the
+     * concrete expression type). Returns null when the receiver is not a known
+     * imported class or the method is not found via reflection.
+     * Primitive parameters map to null (no retyping needed — OLLIR type is already correct).
+     */
+    private List<String> getImportedMethodParamFqns(JmmNode receiverNode, String methodName, int argCount) {
+        JmmType receiverType = types.getExprType(receiverNode, currentMethod);
+        if (!(receiverType instanceof JmmClassType classType)) return null;
+
+        String simpleName = classType.name();
+        String fqn = table.getImportedFullyQualifiedName(simpleName)
+                .or(() -> table.getImplicitImport(simpleName).map(st -> st.getFullyQualifiedName()))
+                .orElse(null);
+        if (fqn == null) return null;
+
+        try {
+            Class<?> clazz = Class.forName(fqn);
+            for (var m : clazz.getMethods()) {
+                if (m.getName().equals(methodName) && m.getParameterCount() == argCount) {
+                    return Arrays.stream(m.getParameterTypes())
+                            .map(p -> (p.isPrimitive() || p.isArray()) ? null : p.getName())
+                            .collect(Collectors.toList());
+                }
+            }
+        } catch (ClassNotFoundException ignored) {}
+        return null;
+    }
+
+    private String retypeArgCode(String code, String fqn) {
+        int dot = code.indexOf('.');
+        String varPart = dot < 0 ? code : code.substring(0, dot);
+        int lastDot = fqn.lastIndexOf('.');
+        String simpleName = lastDot >= 0 ? fqn.substring(lastDot + 1) : fqn;
+        return varPart + "." + simpleName;
+    }
+
+    /** Returns the fully-qualified class name for a class type, or null if not a class type. */
+    private String resolveClassTypeFqn(JmmType type) {
+        if (!(type instanceof JmmClassType classType)) return null;
+        String name = classType.name();
+        return table.getImportedFullyQualifiedName(name)
+                .or(() -> table.getImplicitImport(name).map(st -> st.getFullyQualifiedName()))
+                .orElseGet(() -> name.equals(table.getClassName()) ? table.getFullyQualifiedName() : name);
     }
 
     private boolean isStaticCall(JmmNode receiverNode) {

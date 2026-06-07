@@ -6,10 +6,6 @@ import pt.up.fe.specs.util.exceptions.NotImplementedException;
 
 import static org.specs.comp.ollir.OperationType.*;
 
-/**
- * Generates code for expressions: operand loads, literals, arithmetic,
- * comparisons, logical NOT, and array operand loads.
- */
 class JasminExpressionEmitter {
 
     private static final String NL = "\n";
@@ -38,20 +34,14 @@ class JasminExpressionEmitter {
         return "ldc " + literalStr + NL;
     }
 
-    /** Load a regular (non-array-element) operand onto the stack. */
     String operand(Operand operand) {
-        var reg = gen.currentMethod.getVarTable().get(operand.getName());
+        var reg = gen.getDescriptor(operand.getName());
         gen.stack.update(+1);
         return gen.types.getLoad(reg) + NL;
     }
 
-    /**
-     * Load an ArrayOperand as a plain reference (e.g., passing an array variable
-     * as an argument to a method). We just load the array reference, not an element.
-     * Element access (arr[i]) is handled by JasminAssignEmitter.
-     */
     String arrayOperand(ArrayOperand arrayOperand) {
-        var reg = gen.currentMethod.getVarTable().get(arrayOperand.getName());
+        var reg = gen.getDescriptor(arrayOperand.getName());
         gen.stack.update(+1);
         return gen.types.getLoad(reg) + NL;
     }
@@ -66,7 +56,7 @@ class JasminExpressionEmitter {
         var code = new StringBuilder();
         code.append(gen.apply(binaryOp.getLeftOperand()));
         code.append(gen.apply(binaryOp.getRightOperand()));
-        gen.stack.update(-1);
+        gen.stack.update(-1); // binary op pops 2 pushes 1: net -1
 
         var typePrefix = gen.types.getTypePrefix(binaryOp.getOperation().getTypeInfo());
 
@@ -89,10 +79,6 @@ class JasminExpressionEmitter {
         return code.toString();
     }
 
-    /**
-     * Emits operand loads and a conditional branch to {@code trueLabel}.
-     * Optimizes to single-operand branch instructions when one side is the literal 0.
-     */
     String emitComparisonBranch(BinaryOpInstruction binOp, String trueLabel) {
         var left = binOp.getLeftOperand();
         var right = binOp.getRightOperand();
@@ -122,7 +108,7 @@ class JasminExpressionEmitter {
 
         var code = new StringBuilder();
         code.append(emitComparisonBranch(binaryOp, thenLabel));
-        gen.stack.update(+1);
+        gen.stack.update(+1); // result will be on stack (0 or 1)
 
         code.append("iconst_0").append(NL);
         code.append("goto ").append(endLabel).append(NL);
@@ -139,11 +125,11 @@ class JasminExpressionEmitter {
         if (opType != LOGICAL_NOT) throw new NotImplementedException(opType);
 
         var code = new StringBuilder();
-        code.append(gen.apply(unaryOp.getOperand()));
+        code.append(gen.apply(unaryOp.getOperand())); // +1
         code.append("iconst_1").append(NL);
         gen.stack.update(+1);
         code.append("ixor").append(NL);
-        gen.stack.update(-1);
+        gen.stack.update(-1); // ixor pops 2 pushes 1: net -1
         return code.toString();
     }
 }

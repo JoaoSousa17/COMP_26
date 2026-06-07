@@ -13,16 +13,13 @@
 
 package pt.up.fe.comp.cp3.core.jasmin.integration;
 
-import examples.Auxi;
-import examples.Pair;
 import examples.Quicksort;
-import examples.inheritance.A;
-import examples.inheritance.B;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import pt.up.fe.comp.cp3.BaseJasminTestEnv;
 import pt.up.fe.specs.util.SpecsIo;
+import pt.up.fe.specs.util.SpecsStrings;
 
 import java.util.List;
 import java.util.stream.Collectors;
@@ -89,10 +86,10 @@ public class CompleteAppsJasminTest extends BaseJasminTestEnv {
     public void Life() {
         var res = toJasmin("Life");
         var numResults = 3; //at most 50
-        var expectedLife = SpecsIo.read(RESOURCES_LOCATION + "/" + BASE_PATH + "/expected/Life.log").trim();
+        var expectedLife = SpecsStrings.normalizeFileContents(SpecsIo.read(RESOURCES_LOCATION + "/" + BASE_PATH + "/expected/Life.log").trim(), true);
         var input = "1\n".repeat(numResults - 1) + "0\n";
         var ret = executeWith(res.jasmin(), input);
-        var output = ret.getFullOutput().trim();
+        var output = SpecsStrings.normalizeFileContents(ret.getFullOutput().trim(), true);
         assertTrue("Life for %d iterations should be within expected life".formatted(numResults), expectedLife.contains(output),
                 expectedLife, output);
     }
@@ -115,10 +112,11 @@ public class CompleteAppsJasminTest extends BaseJasminTestEnv {
                 + "0 2\n"   //2
                 + "1 0\n"   //1
                 + "2 0\n";  //2
-        var expected = "Congratulations, 2, you have won the game.";
+        var winner = 2;
+        var expected = "Congratulations, %d, you have won the game.".formatted(winner);
         var run = executeWith(res.jasmin(), input);
         var output = run.getFullOutput().trim();
-        assertTrue("Game should finish with player 2 as a winner.", output.endsWith(expected), expected, output);
+        assertTrue("Game should finish with player 2 as a winner (Checking last phrase). ", output.endsWith(expected), expected, output);
     }
 
     @Test

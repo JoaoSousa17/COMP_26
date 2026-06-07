@@ -133,17 +133,19 @@ public class InstantiationValidationPass extends AnalysisVisitorWithTable {
                     return null;
                 }
 
-                // Check arg types
-                var constructor = matching.get(0);
-                var params = constructor.parameters();
-                for (int i = 0; i < params.size(); i++) {
-                    var expected = params.get(i).type();
-                    var actual = types.getExprType(argNodes.get(i), currentMethod);
-                    if (actual == null) continue;
-                    if (!types.isTypeCompatible(expected, actual)) {
-                        addReport(newError(argNodes.get(i),
-                                "Constructor argument " + (i + 1) + " of '" + className
-                                        + "': expected '" + expected + "', got '" + actual + "'"));
+                if (!argNodes.isEmpty()) {
+                    boolean anyCompatible = matching.stream().anyMatch(ctor -> {
+                        var params = ctor.parameters();
+                        for (int i = 0; i < argNodes.size(); i++) {
+                            var expected = params.get(i).type();
+                            var actual = types.getExprType(argNodes.get(i), currentMethod);
+                            if (actual != null && !types.isTypeCompatible(expected, actual)) return false;
+                        }
+                        return true;
+                    });
+                    if (!anyCompatible) {
+                        addReport(newError(newExpr,
+                                "No constructor in '" + className + "' matches the given argument types"));
                     }
                 }
             }

@@ -10,6 +10,10 @@ class StackTracker {
         max = 0;
     }
 
+    void resetCurrent() {
+        current = 0;
+    }
+
     void update(int delta) {
         current += delta;
         if (current > max) max = current;
